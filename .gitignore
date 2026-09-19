@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Model Home runner output
+# The Modelfile redirects stdout to run/<output>.output.json; that's per-invocation,
+# not source.
+run/
+*.output.json
+
+# Claude Code local state
+# .claude/ itself is committed on purpose: the vendored feat skill lives in
+# .claude/skills/feat/. Ignore only machine- or user-specific settings.
+.claude/settings.local.json
+.claude/*.local.json
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Climatology build download cache (thermal-indices/build_climatology.py)
+.climatology-cache/
+
+# Copernicus CDS API key (build_climatology.py reads it from ~/.cdsapirc).
+# It belongs in the home directory; never commit a copy.
+.cdsapirc
