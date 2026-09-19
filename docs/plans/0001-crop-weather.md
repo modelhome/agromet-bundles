@@ -325,7 +325,7 @@ Recorded as required by `feat`; none change the brief's intent.
 
 ## Review findings addressed
 
-Copilot's review of PR #1, both findings confirmed and fixed in `9e3e4a1`.
+Copilot's review of PR #1, both findings confirmed and fixed in `3c784a1`.
 
 1. **`daily_payload` could raise `KeyError` (medium).** It skipped any
    `DAILY_VARIABLES` entry absent from the response (`if name in daily`), so a
