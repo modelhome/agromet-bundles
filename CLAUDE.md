@@ -292,7 +292,9 @@ platform validator; longer prose belongs in the README. Validate from the
   from `retrieved_at`.
 - `regions.csv` built from the NASS 2022 Census: the ten states are IA, IL, MN,
   NE, IN, SD, OH, WI, KS, MO, each from 64-103 counties with 0-5 withheld.
-- **Not yet verified:** the Model Home import (AC-9).
+- **Not yet verified:** the Model Home import (AC-9). The local stack is up
+  (`kind-modelhome`, Vite :5173, port-forward :8000) but behind Auth0 login, so
+  it needs a signed-in human.
 
 ### Task list
 
