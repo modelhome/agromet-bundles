@@ -200,10 +200,115 @@ implementation land together in one pull request:
 Repo-wide conventions live in this file; briefs reference them rather than
 restating them.
 
+## The `crop-weather/` bundle
+
+**US Corn Crop Weather.** Given an optional `date`, fetches daily Open-Meteo
+weather from 1 January through `date` plus 15 forecast days for ten
+production-weighted US corn-state points, converts it into PCSE's
+`WeatherDataContainer` convention, and adds capped-average growing degree days
+and frost / heat-stress day counts. Brief:
+`docs/features/0001-crop-weather.md`; plan with every decision and its
+reasoning: `docs/plans/0001-crop-weather.md`. User-facing documentation:
+[`crop-weather/README.md`](./crop-weather/README.md).
+
+```
+crop-weather/
+  Modelfile.toml      two JSON outputs; semantic annotations
+  Dockerfile          python:3.12-slim, no pip layer at all
+  runner.py           the model
+  regions.csv         ten states: production-weighted point, method, source
+  build_regions.py    one-time region build (not in the image)
+  check_weather.py    validation incl. a real WOFOST run (not in the image)
+  sample_input.json   2026-09-15, Iowa / Illinois / Nebraska
+  README.md
+```
+
+### Design notes
+
+- **Two JSON outputs, not CSV.** Model Home keeps only `<name>.output.json`, so
+  the long-format table is `crop_weather_daily` (`{metadata, columns, rows}`)
+  and the per-region view is `crop_weather_summary`. The CSV is written beside
+  the summary for off-platform use only. `crop_weather_daily` comes from the
+  stdout redirect; `crop_weather_summary` is an `{output:...}` arg.
+- **Zero runtime dependencies.** The runner is standard library only, so the
+  Dockerfile has no `pip install` layer. That is only possible because `E0`,
+  `ES0` and `ET0` are left to the crop model (see below); everything else is
+  arithmetic, including a hand-rolled `percentile` that matches numpy's default
+  and the FAO-56 top-of-atmosphere calculation.
+- **`E0`, `ES0` and `ET0` are node 2's job.** They are in
+  `WeatherDataContainer.required` and WOFOST reads them directly, but they are
+  PCSE's own physics (`pcse.util.reference_ET`), so they belong on PCSE's side
+  of the boundary. This node emits everything `reference_ET` needs, including
+  the Angstrom coefficients it estimated. `crop-weather/README.md` carries the
+  exact provider class the crop model owes; `check_weather.py` runs it.
+- **Container units, not CSV-file units.** See the PCSE contract section above.
+  The CSV sidecar matches the JSON, so it is deliberately not a drop-in for
+  `pcse.input.CSVWeatherDataProvider`.
+- **Column names are PCSE's.** `LAT`/`LON`/`ELEV` rather than `lat`/`lon`/
+  `elev_m` in the output rows, so the crop model renames nothing. The unit lives
+  in the Modelfile annotation instead of the column name.
+- **ERA5 first, forecast for the tail.** The archive supplies every day it
+  covers (it lags ~6 days); the forecast endpoint supplies the rest (~21 days)
+  and those rows get `is_forecast = true`. A day neither covers fails the run.
+- **Six daily aggregations, no hourly block.** Open-Meteo serves
+  `dew_point_2m_mean` and `wind_speed_10m_mean` daily, so unlike PCSE's own
+  provider this needs no hourly fetch. Two calls per region, 20 per default run.
+- **`forecast_days` counts days after `date`, max 15.** Open-Meteo's own
+  `forecast_days=16` counts today as its first day; asking for a 16th day past
+  today falls off the end of the window. This was caught by the empty-input run,
+  not by the sample.
+- **GDD accumulates from `season_start`, not from planting.** This node knows
+  nothing about planting dates. `gdd_daily` is emitted alongside
+  `gdd_cumulative` so the crop model can re-accumulate from its own start.
+- **Compact JSON outputs** (no indentation): 2,770 rows is ~900 KB compact.
+
+### Modelfile
+
+Mirrors `thermal-indices`: `run` redirects stdout to
+`run/crop_weather_daily.output.json`, `args = ["{input:crop_weather_request}",
+"{output:crop_weather_summary}"]`, `required = []` everywhere and
+`default = {}`. Note `validity_domain` is capped at **600 characters** by the
+platform validator; longer prose belongs in the README. Validate from the
+`modelhome` repo with
+`uv run python -m orchestration.modelfile validate <path>/crop-weather/Modelfile.toml`
+(currently OK, no annotation warnings).
+
+### Verified results (2026-09-19)
+
+- `check_weather.py` on the full default run: **118/118 checks pass**. That
+  includes a real `Wofost72_PP` maize simulation on the Iowa series (sown
+  2026-05-01, anthesis 2026-06-30, maturity 2026-08-13, TWSO 10,926 kg/ha,
+  LAImax 4.22 -- all credible for central Iowa), the six weather variables
+  reading back unchanged through `WeatherDataContainer`, PCSE's own unit strings
+  matching, `WIND_10M_TO_2M` equal to `pcse.util.wind10to2`, and the
+  hand-worked GDD and stress cases.
+- Sample (2026-09-15, 3 regions): 819 rows, 51 forecast, 3 s.
+- Full default run (empty input, 10 regions): 2,770 rows, 210 forecast, 19.6 s.
+  Resolved defaults are today / Jan 1 / 15 / 10 / 30 / 0 / 32. Ranges are sane:
+  IRRAD 1.7e6..3.1e7 J/m2/day, VAP 0.48..32.4 hPa, WIND 0.74..7.2 m/s,
+  RAIN 0..6.6 cm/day, all inside PCSE's range checks.
+- Docker build and run (both the default `CMD` and the Modelfile's mounted
+  layout) produce rows **identical** to the local run, metadata identical apart
+  from `retrieved_at`.
+- `regions.csv` built from the NASS 2022 Census: the ten states are IA, IL, MN,
+  NE, IN, SD, OH, WI, KS, MO, each from 64-103 counties with 0-5 withheld.
+- **Not yet verified:** the Model Home import (AC-9).
+
+### Task list
+
+1. AC-9: add the model on the local Model Home stack from the branch subfolder
+   URL and run it with `{}`.
+2. Mark the PR ready once AC-9 passes; John merges.
+3. After merge: register on Model Home from `main` and put it on a daily
+   schedule with `{}`.
+4. Follow-ups: NASA POWER for the observed leg; crop-reporting-district
+   granularity; wheat and soy parameter sets; `TEMP` as an explicit column if
+   the crop model wants it rather than PCSE's `(TMIN+TMAX)/2` default.
+
 ## Task list
 
-1. Create `modelhome/agromet-bundles` on GitHub and push `main` (this scaffold
-   plus the vendored feat skill), so `/feat run` has a base to branch from.
-2. `crop-weather/` (brief 0001): plan, review, then run.
-3. Sibling repos, composed through a Flow: `wofost-bundles/corn-yield/`,
-   `ag-commodity-bundles/corn-price/`.
+1. ~~Create `modelhome/agromet-bundles` on GitHub and push `main`.~~ Done
+   2026-09-19.
+2. Finish `crop-weather/` (brief 0001): see that bundle's task list above.
+3. Sibling repos, composed through a Flow: `wofost-bundles/corn-yield/`
+   (which owes `E0`/`ES0`/`ET0`), `ag-commodity-bundles/corn-price/`.

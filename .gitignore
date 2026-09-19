@@ -31,9 +31,6 @@ run/
 .vscode/
 *.swp
 
-# Climatology build download cache (thermal-indices/build_climatology.py)
-.climatology-cache/
-
-# Copernicus CDS API key (build_climatology.py reads it from ~/.cdsapirc).
-# It belongs in the home directory; never commit a copy.
-.cdsapirc
+# Region build download cache (crop-weather/build_regions.py). The NASS bulk
+# export alone is ~300 MB; regions.csv is the committed artifact, not this.
+.nass-cache/

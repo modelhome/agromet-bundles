@@ -1,0 +1,8 @@
+{
+  "date": "2026-09-15",
+  "regions": [
+    {"region_key": "ia", "state": "IA", "lat": 42.2639, "lon": -93.537, "elev_m": 331.0},
+    {"region_key": "il", "state": "IL", "lat": 40.3194, "lon": -89.2176, "elev_m": 204.0},
+    {"region_key": "ne", "state": "NE", "lat": 41.1658, "lon": -98.3301, "elev_m": 563.0}
+  ]
+}

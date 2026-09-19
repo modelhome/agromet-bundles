@@ -1,0 +1,277 @@
+name = "US Corn Crop Weather"
+description = "The daily weather a corn crop model runs on, for the ten biggest US corn states. Each state is represented by one point weighted towards where its corn actually grows. Covers 1 January through today plus a two-week forecast, and reports temperature, sunlight, humidity, wind and rain in exactly the form the WOFOST crop model expects, alongside accumulated growing degree days and counts of frost and heat-stress days. Run it with an empty input to get the season so far; built to run once a day."
+# Prints the crop_weather_daily table JSON to stdout; the platform redirects it
+# to the output file. The runner writes crop_weather_summary itself, to the path
+# in args.
+run = "docker run --rm -v \"$PWD/run:/run\" ${IMAGE} ${ARGS} > run/crop_weather_daily.output.json"
+image = "modelhome/agromet-crop-weather:latest"
+args = ["{input:crop_weather_request}", "{output:crop_weather_summary}"]
+
+# Semantic annotations. Determinism: the code is deterministic and introduces no
+# randomness, but it reads live weather, so a run is reproducible given `date`,
+# the region set and the upstream Open-Meteo data *as of retrieval*. The newest
+# ~21 days per region come from the forecast endpoint (is_forecast = true) and
+# ERA5 revises them later, so re-running an old date can shift those days. Every
+# run recomputes the whole window with the current code, so the series always
+# reflects current data and current code. `retrieved_at` records when.
+determinism = "deterministic"
+expected_runtime = "seconds"
+validity_domain = "US corn regions (land points) for dates Open-Meteo serves: ERA5 from 1940, forecasts to 15 days past today. One point per state, the production-weighted centroid of its county corn production, so values describe the state's corn area, not one field. Columns follow pcse.base.WeatherDataContainer (PCSE 6.0.13): TMIN/TMAX degC, IRRAD J/m2/day, VAP hPa, WIND m/s at 2 m, RAIN cm/day, not PCSE's CSV file convention. E0, ES0 and ET0 are not computed here. GDD is capped-average from season_start; base, cap and both thresholds are inputs. See the README."
+not_for = "Field-level agronomic decisions (these are state-scale representative points, not your farm), official crop forecasts (use USDA NASS), or any use where a revised forecast day would be mistaken for an observation. Off-season output is valid but quiet; the series is most meaningful from about April to October."
+provenance = "Weather: Open-Meteo (ERA5 archive + forecast API, CC BY 4.0). Region production weights: USDA NASS 2022 Census of Agriculture, county corn for grain. County coordinates: US Census Bureau 2023 Gazetteer. Unit conventions and the Angstrom estimator follow PCSE 6.0.13. See the bundle README."
+
+[resources]
+# Ten regions, two HTTP calls each, and plain-Python arithmetic over ~280 days.
+memory = "512Mi"
+cpu = "1"
+
+[[inputs]]
+# required = [] everywhere: an empty object is the normal input, and it is what
+# a daily schedule should send. `default = {}` makes the platform's "Example to
+# paste" exactly that; a fixed date there would freeze every schedule built
+# from it on one day.
+name = "crop_weather_request"
+description = "Which day, which places and which crop thresholds to report. Leave empty for today, the ten built-in corn states and corn's own thresholds."
+
+[inputs.schema]
+type = "object"
+required = []
+description = "Leave this empty to get the season so far for the ten biggest US corn states. Fill in a field only to look at a different day, different places, or a different crop."
+default = {}
+
+[inputs.schema.properties.date]
+type = "string"
+format = "date"
+description = "The last observed day, as YYYY-MM-DD. Leave it out for today (UTC). Days after this one come from the forecast."
+
+[inputs.schema.properties.season_start]
+type = "string"
+format = "date"
+description = "The first day to report, as YYYY-MM-DD. Leave it out for 1 January of the same year. Growing degree days and the stress-day counts are accumulated from this day."
+
+[inputs.schema.properties.forecast_days]
+type = "integer"
+unit = "d"
+description = "How many days of forecast to add after the last observed day, 0 to 15. Leave it out for 15, which is as far ahead as the weather service reaches."
+
+[inputs.schema.properties.gdd_base_c]
+type = "number"
+unit = "degC"
+description = "The temperature below which the crop does not develop. Leave it out for corn's 10 degrees Celsius."
+
+[inputs.schema.properties.gdd_cap_c]
+type = "number"
+unit = "degC"
+description = "The temperature above which extra heat stops speeding development up. Leave it out for corn's 30 degrees Celsius. Must be above gdd_base_c."
+
+[inputs.schema.properties.frost_threshold_c]
+type = "number"
+unit = "degC"
+description = "A day whose lowest temperature is at or below this counts as a frost day. Leave it out for 0 degrees Celsius."
+
+[inputs.schema.properties.heat_threshold_c]
+type = "number"
+unit = "degC"
+description = "A day whose highest temperature is at or above this counts as a heat-stress day. Leave it out for 32 degrees Celsius, where corn pollination starts to suffer."
+
+[inputs.schema.properties.regions]
+type = "array"
+description = "Places to report instead of the ten built-in states. Each one needs its own coordinates and elevation."
+
+[inputs.schema.properties.regions.items]
+type = "object"
+required = ["region_key", "lat", "lon", "elev_m"]
+description = "One place."
+
+[inputs.schema.properties.regions.items.properties.region_key]
+type = "string"
+description = "Short stable identifier for this place, e.g. ia. Downstream models join on it, so keep it the same between runs."
+
+[inputs.schema.properties.regions.items.properties.state]
+type = "string"
+description = "Two-letter state code, e.g. IA. Optional; carried through to the output."
+
+[inputs.schema.properties.regions.items.properties.lat]
+type = "number"
+unit = "degrees north"
+description = "Latitude, -90 to 90."
+
+[inputs.schema.properties.regions.items.properties.lon]
+type = "number"
+unit = "degrees east"
+description = "Longitude, -180 to 180 (US longitudes are negative)."
+
+[inputs.schema.properties.regions.items.properties.elev_m]
+type = "number"
+unit = "m"
+description = "Elevation above sea level. The crop model needs it, so there is no sensible default."
+
+[[outputs]]
+# One row per region per day: the table the crop model reads.
+name = "crop_weather_daily"
+description = "The daily weather series, one row per region per day, in the crop model's own variables and units."
+
+[outputs.schema]
+type = "object"
+required = ["metadata", "columns", "rows"]
+description = "The season's table: one row per region and day, oldest day first within each region."
+
+[outputs.schema.properties.metadata]
+type = "object"
+description = "When and how the run was made: date, season_start, forecast_days, retrieved_at, data_source, endpoints, the GDD and threshold settings, the GDD method, the Angstrom coefficients per region, the region table, and which PCSE unit convention the columns follow."
+
+[outputs.schema.properties.columns]
+type = "array"
+description = "Column names, in order. Every row has exactly these keys."
+
+[outputs.schema.properties.rows]
+type = "array"
+description = "One object per region and day."
+
+[outputs.schema.properties.rows.items]
+type = "object"
+required = ["region_key", "state", "date", "is_forecast", "LAT", "LON", "ELEV", "TMIN", "TMAX", "IRRAD", "VAP", "WIND", "RAIN", "gdd_daily", "gdd_cumulative", "frost_day", "heat_stress_day", "frost_days_to_date", "heat_stress_days_to_date"]
+
+[outputs.schema.properties.rows.items.properties.region_key]
+type = "string"
+description = "The region's stable identifier, e.g. ia. Downstream models join on this."
+
+[outputs.schema.properties.rows.items.properties.state]
+type = "string"
+description = "Two-letter state code."
+
+[outputs.schema.properties.rows.items.properties.date]
+type = "string"
+format = "date"
+description = "The calendar day (UTC)."
+
+[outputs.schema.properties.rows.items.properties.is_forecast]
+type = "boolean"
+description = "True when this day came from the forecast rather than the ERA5 archive; those values can change on a later run."
+
+[outputs.schema.properties.rows.items.properties.LAT]
+type = "number"
+unit = "degrees north"
+description = "Latitude of the point the weather was taken from. Named as the crop model names it."
+
+[outputs.schema.properties.rows.items.properties.LON]
+type = "number"
+unit = "degrees east"
+description = "Longitude of the point the weather was taken from. Named as the crop model names it."
+
+[outputs.schema.properties.rows.items.properties.ELEV]
+type = "number"
+unit = "m"
+description = "Elevation of that point. Named as the crop model names it."
+
+[outputs.schema.properties.rows.items.properties.TMIN]
+type = "number"
+unit = "degC"
+description = "Lowest air temperature of the day."
+
+[outputs.schema.properties.rows.items.properties.TMAX]
+type = "number"
+unit = "degC"
+description = "Highest air temperature of the day."
+
+[outputs.schema.properties.rows.items.properties.IRRAD]
+type = "number"
+unit = "J/m2/day"
+description = "Total sunlight energy reaching the ground over the day. In joules, which is what the crop model expects; a sunny summer day is about 30 million."
+
+[outputs.schema.properties.rows.items.properties.VAP]
+type = "number"
+unit = "hPa"
+description = "Average water-vapour pressure, a measure of how humid the air was, derived from the day's mean dew point."
+
+[outputs.schema.properties.rows.items.properties.WIND]
+type = "number"
+unit = "m/s"
+description = "Average wind speed at 2 m above the ground, converted from the 10 m measurement the weather service reports."
+
+[outputs.schema.properties.rows.items.properties.RAIN]
+type = "number"
+unit = "cm"
+description = "Total precipitation over the day, in centimetres, which is what the crop model expects (not millimetres)."
+
+[outputs.schema.properties.rows.items.properties.gdd_daily]
+type = "number"
+unit = "degC d"
+description = "Growing degree days earned on this day: how much warmth the crop got for development, never below zero."
+
+[outputs.schema.properties.rows.items.properties.gdd_cumulative]
+type = "number"
+unit = "degC d"
+description = "Growing degree days accumulated from season_start through this day: the usual measure of how far along the crop is."
+
+[outputs.schema.properties.rows.items.properties.frost_day]
+type = "boolean"
+description = "True when the day's lowest temperature was at or below frost_threshold_c."
+
+[outputs.schema.properties.rows.items.properties.heat_stress_day]
+type = "boolean"
+description = "True when the day's highest temperature was at or above heat_threshold_c."
+
+[outputs.schema.properties.rows.items.properties.frost_days_to_date]
+type = "integer"
+unit = "d"
+description = "How many frost days there have been since season_start, counting this one."
+
+[outputs.schema.properties.rows.items.properties.heat_stress_days_to_date]
+type = "integer"
+unit = "d"
+description = "How many heat-stress days there have been since season_start, counting this one."
+
+[[outputs]]
+# The same values grouped per region, for a season chart or a map.
+name = "crop_weather_summary"
+description = "The same values grouped by region, each with its full daily series, for charts and maps."
+
+[outputs.schema]
+type = "object"
+required = ["generated_at", "metadata", "regions"]
+description = "The same values grouped by region: each region's coordinates plus its whole season, day by day."
+
+[outputs.schema.properties.generated_at]
+type = "string"
+format = "date-time"
+description = "When the outputs were written (UTC)."
+
+[outputs.schema.properties.metadata]
+type = "object"
+description = "The same run metadata as crop_weather_daily."
+
+[outputs.schema.properties.regions]
+type = "array"
+description = "One entry per region: region_key, state, LAT, LON, ELEV and days, the full daily series with every crop_weather_daily column except the ones that repeat per region."
+
+[outputs.schema.properties.regions.items]
+type = "object"
+required = ["region_key", "state", "LAT", "LON", "ELEV", "days"]
+
+[outputs.schema.properties.regions.items.properties.region_key]
+type = "string"
+description = "The region's stable identifier."
+
+[outputs.schema.properties.regions.items.properties.state]
+type = "string"
+description = "Two-letter state code."
+
+[outputs.schema.properties.regions.items.properties.LAT]
+type = "number"
+unit = "degrees north"
+description = "Latitude of the point the weather was taken from."
+
+[outputs.schema.properties.regions.items.properties.LON]
+type = "number"
+unit = "degrees east"
+description = "Longitude of the point the weather was taken from."
+
+[outputs.schema.properties.regions.items.properties.ELEV]
+type = "number"
+unit = "m"
+description = "Elevation of that point."
+
+[outputs.schema.properties.regions.items.properties.days]
+type = "array"
+description = "The region's daily entries, oldest first."
