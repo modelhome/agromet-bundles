@@ -31,9 +31,16 @@ run/
 .vscode/
 *.swp
 
-# Climatology build download cache (thermal-indices/build_climatology.py)
-.climatology-cache/
+# Region build download cache (crop-weather/build_regions.py). The NASS bulk
+# export alone is ~300 MB; regions.csv is the committed artifact, not this.
+.nass-cache/
 
-# Copernicus CDS API key (build_climatology.py reads it from ~/.cdsapirc).
-# It belongs in the home directory; never commit a copy.
+# Credentials. No bundle here needs a key today -- the NASS and Census sources
+# are open and Open-Meteo is keyless -- but the planned NASA POWER / Copernicus
+# work would bring one, and these belong in the home directory either way.
+# Never commit a copy.
 .cdsapirc
+.netrc
+*.pem
+.env
+.env.*

@@ -12,7 +12,7 @@ installed as pinned pip packages inside each bundle's image.
 
 | Bundle | Model | Inputs -> Outputs |
 |---|---|---|
-| `crop-weather/` | *(in progress, brief [0001](./docs/features/0001-crop-weather.md))* Daily weather per US corn-growing region, season to date plus a forecast horizon, in the variables and units PCSE/WOFOST consumes | optional date, regions, season start, forecast horizon and GDD parameters (empty for today's defaults) -> per region per day: the PCSE weather series, plus accumulated growing degree days and frost / heat-stress flags |
+| [`crop-weather/`](./crop-weather) | US corn crop weather: the daily series a WOFOST run consumes, for the ten biggest corn states, 1 January to today plus a two-week forecast, from Open-Meteo | optional date, regions, season start, forecast horizon and crop thresholds (empty for today) -> per region per day: TMIN, TMAX, IRRAD, VAP, WIND and RAIN in PCSE's own units, plus accumulated growing degree days and frost / heat-stress days; and the same grouped per region |
 
 ## Quick start
 

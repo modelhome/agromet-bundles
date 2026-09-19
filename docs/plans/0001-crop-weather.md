@@ -1,9 +1,9 @@
 # Plan: Crop weather
 
 Source brief: docs/features/0001-crop-weather.md
-Status: planned
+Status: blocked (AC-9 only; every other criterion passes)
 Planned against commit: 21b4f41 (main, `modelhome/agromet-bundles`)
-Base commit: [recorded by run]
+Base commit: 00d80d6 (branch feat/0001-crop-weather)
 
 ## Outcome
 
@@ -192,16 +192,16 @@ disagrees, the table wins and the README records the vintage.
 
 | ID | Acceptance criterion | Implementation | Verification | Status |
 |---|---|---|---|---|
-| AC-1 | Repo scaffold matching `thermofeel-bundles` conventions | already on `main` at 21b4f41; `crop-weather/` added by this work | `ls` the tree; `.gitignore` does not exclude `.claude/` | planned |
-| AC-2 | `crop-weather/` contains Modelfile, Dockerfile, runner, sample input, region table | `crop-weather/{Modelfile.toml,Dockerfile,runner.py,sample_input.json,regions.csv}` | file listing; `uv run python -m orchestration.modelfile validate` from the `modelhome` repo | planned |
-| AC-3 | Runner runs end to end and writes both outputs for the full window | `runner.py` | `python crop-weather/runner.py crop-weather/sample_input.json run/crop_weather_summary.output.json > run/crop_weather_daily.output.json` | planned |
-| AC-4 | `docker build` succeeds; `docker run` reproduces the outputs | `crop-weather/Dockerfile` | build from `crop-weather/`, run with the sample, diff rows against the local run | planned |
-| AC-5 | Output loads into a PCSE `WeatherDataProvider` unchanged | container-native columns and units (D2); `check_weather.py` provider shim | `check_weather.py`: build containers from the output and run WOFOST to a finished yield | planned |
-| AC-6 | GDD and stress flags correct against a hand-worked example; parameters documented | `runner.py` GDD/stress block; Modelfile `[inputs.schema.properties]` | `check_weather.py` hand-worked cases incl. cap and base clamping and a zero-GDD day | planned |
-| AC-7 | ~10 top corn states, one representative point each, stable key, NASS-sourced, method documented | `build_regions.py` -> `regions.csv` | `check_weather.py` table checks: 10 rows, unique keys, points inside the US corn belt, non-null method and source | planned |
-| AC-8 | Empty input yields today / built-in regions / Jan-1 start / ~16-day forecast / corn defaults | `runner.py` defaults; Modelfile `default = {}` | run with `{}` and assert the resolved parameters in the output metadata | planned |
-| AC-9 | Subfolder URL creates a working model on the local stack | n/a (platform action) | add the model at `http://localhost:5173/models/new/repo` from the branch subfolder URL, run it with `{}` | planned |
-| AC-10 | README documents endpoints, every conversion, GDD and thresholds, regions, determinism, NASA POWER | `crop-weather/README.md` | read-through against this plan's D6, D7, D8, D9 | planned |
+| AC-1 | Repo scaffold matching `thermofeel-bundles` conventions | `main` at 21b4f41; `.gitignore` keeps `.claude/` and ignores `.nass-cache/` | tree inspected; `git status` clean of cache and output dirs | pass |
+| AC-2 | `crop-weather/` contains Modelfile, Dockerfile, runner, sample input, region table | all eight files under `crop-weather/` | `orchestration.modelfile validate` -> `OK`, no annotation warnings | pass |
+| AC-3 | Runner runs end to end and writes both outputs for the full window | `crop-weather/runner.py` | sample: 819 rows over 273 days, 51 forecast, 3 s; both JSON documents and the CSV written | pass |
+| AC-4 | `docker build` succeeds; `docker run` reproduces the outputs | `crop-weather/Dockerfile` (no pip layer) | image built; rows **identical** to the local run (819 vs 819), metadata identical apart from `retrieved_at`; bare `CMD` run works | pass |
+| AC-5 | Output loads into a PCSE `WeatherDataProvider` unchanged | container-native columns and units; `check_weather.py` `build_provider` | `Wofost72_PP` maize run on the Iowa series to maturity: sown 2026-05-01, anthesis 06-30, maturity 08-13, TWSO 10,926 kg/ha, LAImax 4.22; six variables read back unchanged; PCSE's own unit strings match | pass |
+| AC-6 | GDD and stress flags correct against a hand-worked example; parameters documented | `growing_degree_days`, `daily_rows`; four Modelfile inputs | `check_weather.py`: capped TMAX, floored TMIN, zero-GDD day, at-the-base day, a wheat-like base, and the five-day accumulation and flag series | pass |
+| AC-7 | ~10 top corn states, one representative point each, stable key, NASS-sourced, method documented | `build_regions.py` -> `regions.csv` | 10 rows, unique keys, every point in the corn belt and inside its own counties' hull, `method` and `source` populated on every row | pass |
+| AC-8 | Empty input yields today / built-in regions / Jan-1 start / forecast horizon / corn defaults | `parse_request` defaults; `default = {}` | run with `{}`: 2026-09-19 / Jan 1 / 15 / 10 / 30 / 0 / 32, ten built-in regions, 2,770 rows, 210 forecast, 19.6 s | pass |
+| AC-9 | Subfolder URL creates a working model on the local stack | n/a (platform action) | **blocked**: the local stack is running (Vite :5173, port-forward :8000, context `kind-modelhome`) but sits behind Auth0 login, and this session does not sign in on the user's behalf | blocked |
+| AC-10 | README documents endpoints, every conversion, GDD and thresholds, regions, determinism, NASA POWER | `crop-weather/README.md` | all six sections present and checked against D6, D7, D8, D9; plus the provider class the crop model owes | pass |
 
 ## Verification
 
@@ -211,11 +211,15 @@ never of the image.
 
 | Command | Purpose | Baseline result | Final result |
 |---|---|---|---|
-| `python crop-weather/runner.py crop-weather/sample_input.json run/crop_weather_summary.output.json > run/crop_weather_daily.output.json` | AC-3: the model runs and writes both outputs | pending | pending |
-| `python crop-weather/runner.py <(echo '{}') run/crop_weather_summary.output.json > run/crop_weather_daily.output.json` | AC-8: the schedule-shaped empty input | pending | pending |
-| `uv run --no-project --python 3.12 --with pcse==6.0.13 python crop-weather/check_weather.py run/crop_weather_daily.output.json` | AC-5, AC-6, AC-7: WOFOST run, hand-worked GDD, region table | pending | pending |
-| `cd crop-weather && docker build -t agromet-crop-weather:local . && docker run --rm agromet-crop-weather:local` | AC-4: image builds and reproduces the rows | pending | pending |
-| `uv run python -m orchestration.modelfile validate <path>/crop-weather/Modelfile.toml` (from the `modelhome` repo) | AC-2: Modelfile parses with no annotation warnings | pending | pending |
+| `python3 crop-weather/runner.py crop-weather/sample_input.json run/crop_weather_summary.output.json > run/crop_weather_daily.output.json` | AC-3 | no such file (nothing existed on the branch) | pass: 819 rows, 51 forecast, 3.1 s |
+| `python3 crop-weather/runner.py run/_empty_input.json run/crop_weather_summary.output.json > run/crop_weather_daily.output.json` | AC-8 | no such file | pass: 2,770 rows, 210 forecast, 19.6 s, defaults as declared |
+| `uv run --no-project --python 3.12 --with pcse==6.0.13 --with numpy python check_weather.py ../run/crop_weather_daily.output.json` | AC-5, AC-6, AC-7 | no such file | pass: **123/123 checks**, including the WOFOST run and the payload guards added after review |
+| `cd crop-weather && docker build -t agromet-crop-weather:local . && docker run --rm -v "$PWD/run:/run" ...` | AC-4 | no such file | pass: build OK; rows identical to local |
+| `uv run python -m orchestration.modelfile validate .../crop-weather/Modelfile.toml` | AC-2 | no such file | pass: `OK`, after trimming `validity_domain` to the validator's 600-character cap |
+
+There was no pre-existing test harness and no pre-existing code on this branch,
+so every baseline is "the file did not exist yet". Nothing here can be a
+regression; there is no prior behaviour to regress.
 
 ## Implementation steps
 
@@ -281,6 +285,67 @@ README.md                          bundle-table row
 CLAUDE.md                          bundle section, verified results, task list
 ```
 
+## Deviations from this plan
+
+Recorded as required by `feat`; none change the brief's intent.
+
+1. **D3 superseded: no API key needed.** The plan had `build_regions.py` calling
+   the NASS Quick Stats API with a free key. The keyless bulk export of the
+   **2022 Census of Agriculture** (`nass.usda.gov/datasets/qs.census2022.txt.gz`,
+   ~300 MB) carries the same county corn-for-grain series, so the script uses
+   that instead. This removes the plan's stated key risk entirely and makes the
+   build reproducible by anyone. The Census is a complete enumeration with
+   county coverage; counties NASS withholds for disclosure are excluded and
+   counted per state (0 to 5).
+2. **Row columns use PCSE's `LAT`/`LON`/`ELEV`,** not the brief's
+   `lat`/`lon`/`elev_m`. AC-5's "no reformatting" is the brief's own decisive
+   criterion, and renaming three keys would have violated it. The unit lives in
+   the Modelfile's `unit` annotation instead of the column name. The `regions`
+   *input* still uses `lat`/`lon`/`elev_m`, which is what a person types.
+3. **`forecast_days` defaults to 15, not ~16.** Open-Meteo's own `forecast_days`
+   counts today as its first day, so 16 reaches only 15 days past today. Our
+   field counts days *after* `date`, so 15 is the same horizon honestly
+   expressed. The empty-input run caught this as a hard failure; the sample,
+   whose window was entirely in the past, did not.
+4. **Zero pip dependencies, not "numpy only".** Once `E0`/`ES0`/`ET0` moved to
+   node 2 (D1), nothing needed numpy: `percentile` is hand-rolled to match
+   numpy's default (checked against it) and the FAO-56 top-of-atmosphere
+   calculation is `math`. The Dockerfile has no `pip install` layer at all.
+5. **`frost_threshold_c` and `heat_threshold_c` are declared Modelfile inputs,**
+   as the brief's reusability constraint implies. The plan left them as
+   "parameters"; making them first-class inputs is what lets a wheat or soy run
+   change them without a code change.
+6. **`validity_domain` was trimmed to 551 characters.** The platform validator
+   caps it at 600 and says long prose belongs elsewhere; the full detail is in
+   the bundle README. Worth knowing before writing the next Modelfile.
+7. **The sample input moved to `2026-09-15`,** from an earlier `2026-08-15`. The
+   window has to contain a whole maize season for AC-5's WOFOST run to be more
+   than a skip, and a recent date also exercises the forecast leg (51 of its 819
+   rows).
+
+## Review findings addressed
+
+Copilot's review of PR #1, both findings confirmed and fixed in `3c784a1`.
+
+1. **`daily_payload` could raise `KeyError` (medium).** It skipped any
+   `DAILY_VARIABLES` entry absent from the response (`if name in daily`), so a
+   renamed or dropped Open-Meteo variable produced a short dict that blew up
+   later in `to_pcse_row`. Worse than reported: `KeyError` was not in `main`'s
+   except tuple, so it surfaced as a raw traceback rather than the clear
+   non-zero exit this repo requires of a failed fetch. Fixed at the root -- an
+   absent variable is a contract change and now raises `RunError` naming every
+   missing variable -- with `KeyError`/`TypeError` added to the handler as
+   defence in depth. Five regression checks added (`check_payload_guards`), and
+   the end-to-end behaviour verified: exit 1, no traceback, the missing
+   variables named.
+2. **`.gitignore` stopped ignoring `.cdsapirc` (medium).** Introduced by this
+   work: adapting the file from `thermofeel-bundles` replaced the Copernicus
+   credential rule along with the climatology cache it sat next to. No bundle
+   here needs a key today, but removing a credential-ignoring rule is a real
+   regression in safety posture and the planned NASA POWER / Copernicus work
+   would bring one back. Restored and widened to `.cdsapirc`, `.netrc`, `*.pem`,
+   `.env` and `.env.*`.
+
 ## Risks and follow-ups
 
 - **The unit boundary is the whole risk.** Four conversions, one of which PCSE
@@ -289,10 +354,9 @@ CLAUDE.md                          bundle section, verified results, task list
   checks (`IRRAD` 0 to 4.0e7 J/m2/day, `RAIN` 0 to 25 cm/day, `VAP` 0.06 to
   199.3 hPa) raise on a slip, so the WOFOST run catches an order-of-magnitude
   error loudly.
-- **NASS QuickStats needs a free API key**, and `build_regions.py` cannot run
-  without one. It runs once and commits `regions.csv`, so this blocks the build
-  step, not the model. If the key is not to hand, fall back to the documented
-  hand-picked points and say so in `regions.csv`'s `method` column.
+- ~~NASS QuickStats needs a free API key~~ **Resolved** by deviation 1: the
+  keyless Census bulk export. `build_regions.py` ran clean and `regions.csv` is
+  committed.
 - **The forecast endpoint's `past_days` reach is shorter than documented** (~70
   days observed against 92 requested). The archive covers the gap today, but if
   ERA5's lag grows past the forecast reach a day could fall through. The run
@@ -303,8 +367,18 @@ CLAUDE.md                          bundle section, verified results, task list
 - **Whole-season GDD off-season.** From January the accumulation runs through
   winter, so `gdd_cumulative` at planting is not zero. Node 2 re-accumulates
   from its planting date using `gdd_daily`; the README says so.
-- **Not verified until run:** every number in the verification table, and AC-9
-  (the Model Home import), which needs the local stack.
+- **AC-9 is the one outstanding criterion.** The local stack is up
+  (`kind-modelhome`, Vite on :5173, a port-forward on :8000) but the app is
+  behind Auth0 login and this session does not sign in on the user's behalf. To
+  close it: sign in, add the model at `http://localhost:5173/models/new/repo`
+  from
+  `https://github.com/modelhome/agromet-bundles/tree/feat/0001-crop-weather/crop-weather`,
+  and run it with `{}`. Note the memory-recorded footgun that a `kubectl`
+  port-forward on :8000 shadows a local backend.
+- **The Angstrom coefficients move with the window.** They are percentiles of a
+  ~275-day series, so Iowa's A ran 0.2156 to 0.2692 across runs four days apart.
+  Both are inside PCSE's valid range, and the crop model should read them from
+  the same run it reads the weather from; the README says so.
 - **Follow-ups:** NASA POWER as the observed leg; crop-reporting-district
   granularity; wheat and soy parameter sets; a soil-moisture carry-over column
   if node 2 wants one.
