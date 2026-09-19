@@ -213,7 +213,7 @@ never of the image.
 |---|---|---|---|
 | `python3 crop-weather/runner.py crop-weather/sample_input.json run/crop_weather_summary.output.json > run/crop_weather_daily.output.json` | AC-3 | no such file (nothing existed on the branch) | pass: 819 rows, 51 forecast, 3.1 s |
 | `python3 crop-weather/runner.py run/_empty_input.json run/crop_weather_summary.output.json > run/crop_weather_daily.output.json` | AC-8 | no such file | pass: 2,770 rows, 210 forecast, 19.6 s, defaults as declared |
-| `uv run --no-project --python 3.12 --with pcse==6.0.13 --with numpy python check_weather.py ../run/crop_weather_daily.output.json` | AC-5, AC-6, AC-7 | no such file | pass: **118/118 checks**, including the WOFOST run |
+| `uv run --no-project --python 3.12 --with pcse==6.0.13 --with numpy python check_weather.py ../run/crop_weather_daily.output.json` | AC-5, AC-6, AC-7 | no such file | pass: **123/123 checks**, including the WOFOST run and the payload guards added after review |
 | `cd crop-weather && docker build -t agromet-crop-weather:local . && docker run --rm -v "$PWD/run:/run" ...` | AC-4 | no such file | pass: build OK; rows identical to local |
 | `uv run python -m orchestration.modelfile validate .../crop-weather/Modelfile.toml` | AC-2 | no such file | pass: `OK`, after trimming `validity_domain` to the validator's 600-character cap |
 
@@ -322,6 +322,29 @@ Recorded as required by `feat`; none change the brief's intent.
    window has to contain a whole maize season for AC-5's WOFOST run to be more
    than a skip, and a recent date also exercises the forecast leg (51 of its 819
    rows).
+
+## Review findings addressed
+
+Copilot's review of PR #1, both findings confirmed and fixed in `9e3e4a1`.
+
+1. **`daily_payload` could raise `KeyError` (medium).** It skipped any
+   `DAILY_VARIABLES` entry absent from the response (`if name in daily`), so a
+   renamed or dropped Open-Meteo variable produced a short dict that blew up
+   later in `to_pcse_row`. Worse than reported: `KeyError` was not in `main`'s
+   except tuple, so it surfaced as a raw traceback rather than the clear
+   non-zero exit this repo requires of a failed fetch. Fixed at the root -- an
+   absent variable is a contract change and now raises `RunError` naming every
+   missing variable -- with `KeyError`/`TypeError` added to the handler as
+   defence in depth. Five regression checks added (`check_payload_guards`), and
+   the end-to-end behaviour verified: exit 1, no traceback, the missing
+   variables named.
+2. **`.gitignore` stopped ignoring `.cdsapirc` (medium).** Introduced by this
+   work: adapting the file from `thermofeel-bundles` replaced the Copernicus
+   credential rule along with the climatology cache it sat next to. No bundle
+   here needs a key today, but removing a credential-ignoring rule is a real
+   regression in safety posture and the planned NASA POWER / Copernicus work
+   would bring one back. Restored and widened to `.cdsapirc`, `.netrc`, `*.pem`,
+   `.env` and `.env.*`.
 
 ## Risks and follow-ups
 

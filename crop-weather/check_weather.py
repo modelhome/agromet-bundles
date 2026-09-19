@@ -103,6 +103,50 @@ def check_percentile():
               close(runner.percentile(values, q), float(np.percentile(values, q)), 1e-12))
 
 
+def check_payload_guards():
+    """A malformed Open-Meteo response must fail clearly, not raise a KeyError."""
+    print("payload guards")
+    full = {
+        "daily": {
+            "time": ["2026-06-01", "2026-06-02"],
+            "temperature_2m_max": [28.0, 27.0],
+            "temperature_2m_min": [15.0, 14.0],
+            "precipitation_sum": [0.0, 1.0],
+            "shortwave_radiation_sum": [25.0, 20.0],
+            "dew_point_2m_mean": [12.0, 11.0],
+            "wind_speed_10m_mean": [3.0, 2.5],
+        }
+    }
+    parsed = runner.daily_payload(full, "test")
+    check("a complete payload yields every day", len(parsed) == 2, str(len(parsed)))
+    check("every parsed day carries all six variables",
+          all(set(v) == set(runner.DAILY_VARIABLES) for v in parsed.values()))
+
+    missing_block = {"daily": {k: v for k, v in full["daily"].items()
+                               if k != "shortwave_radiation_sum"}}
+    try:
+        runner.daily_payload(missing_block, "test")
+        check("a payload missing a variable raises RunError", False, "no error raised")
+    except runner.RunError as exc:
+        check("a payload missing a variable raises RunError, naming it",
+              "shortwave_radiation_sum" in str(exc), str(exc))
+    except KeyError as exc:
+        check("a payload missing a variable raises RunError, not KeyError",
+              False, f"KeyError {exc}")
+
+    null_day = {"daily": {k: (list(v) if k == "time" else [v[0], None])
+                          for k, v in full["daily"].items()}}
+    parsed = runner.daily_payload(null_day, "test")
+    check("a day with a null value is dropped whole",
+          list(parsed) == ["2026-06-01"], str(list(parsed)))
+
+    try:
+        runner.daily_payload({"daily": {}}, "test")
+        check("an empty daily block raises RunError", False, "no error raised")
+    except runner.RunError:
+        check("an empty daily block raises RunError", True)
+
+
 # --- growing degree days and stress -----------------------------------------
 
 def check_gdd():
@@ -356,6 +400,7 @@ def main():
     path = Path(sys.argv[1]) if len(sys.argv) > 1 else None
     check_units()
     check_percentile()
+    check_payload_guards()
     check_gdd()
     check_regions()
     if path is None:

@@ -275,13 +275,15 @@ platform validator; longer prose belongs in the README. Validate from the
 
 ### Verified results (2026-09-19)
 
-- `check_weather.py` on the full default run: **118/118 checks pass**. That
+- `check_weather.py` on the full default run: **123/123 checks pass**. That
   includes a real `Wofost72_PP` maize simulation on the Iowa series (sown
   2026-05-01, anthesis 2026-06-30, maturity 2026-08-13, TWSO 10,926 kg/ha,
   LAImax 4.22 -- all credible for central Iowa), the six weather variables
   reading back unchanged through `WeatherDataContainer`, PCSE's own unit strings
   matching, `WIND_10M_TO_2M` equal to `pcse.util.wind10to2`, and the
-  hand-worked GDD and stress cases.
+  hand-worked GDD and stress cases, and (added after the Copilot review) five
+  payload guards proving a malformed Open-Meteo response exits 1 with a readable
+  reason rather than a traceback.
 - Sample (2026-09-15, 3 regions): 819 rows, 51 forecast, 3 s.
 - Full default run (empty input, 10 regions): 2,770 rows, 210 forecast, 19.6 s.
   Resolved defaults are today / Jan 1 / 15 / 10 / 30 / 0 / 32. Ranges are sane:

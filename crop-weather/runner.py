@@ -158,10 +158,20 @@ def daily_payload(payload, url):
     daily = payload.get("daily")
     if not daily or "time" not in daily:
         raise RunError(f"{url} returned no daily block")
+    # A variable absent from the whole block means Open-Meteo renamed or dropped
+    # it, which is a contract change, not a data gap. Say so here rather than
+    # letting it surface as a KeyError deep inside the conversion.
+    absent = [name for name in DAILY_VARIABLES if name not in daily]
+    if absent:
+        raise RunError(
+            f"{url} returned no {', '.join(absent)}; the API's daily variables may have "
+            f"changed. Expected all of: {', '.join(DAILY_VARIABLES)}.")
     out = {}
     for index, day in enumerate(daily["time"]):
-        values = {name: daily[name][index] for name in DAILY_VARIABLES if name in daily}
+        values = {name: daily[name][index] for name in DAILY_VARIABLES}
         # Open-Meteo pads days it cannot serve with nulls; those are not data.
+        # A day short of any variable is dropped whole, so every day that
+        # reaches to_pcse_row carries all six.
         if any(value is None for value in values.values()):
             continue
         out[day] = values
@@ -547,7 +557,7 @@ def main():
             rows_by_region[region["region_key"]] = region_rows
             angstrom[region["region_key"]] = region_angstrom
             rows.extend(region_rows)
-    except (RunError, OSError, json.JSONDecodeError, ValueError) as exc:
+    except (RunError, OSError, json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
         log(f"error: {exc}")
         sys.exit(1)
 
