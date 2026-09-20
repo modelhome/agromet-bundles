@@ -241,6 +241,16 @@ crop-weather/
   of the boundary. This node emits everything `reference_ET` needs, including
   the Angstrom coefficients it estimated. `crop-weather/README.md` carries the
   exact provider class the crop model owes; `check_weather.py` runs it.
+- **The validation yield is potential production, and says so.** `Wofost72_PP`
+  assumes water is never limiting, which is perfect irrigation on every acre;
+  measured on the 2026 series, a water-limited run with soil-moisture-triggered
+  irrigation reproduces it to the kilogram. That is the right default for a
+  weather bundle -- it isolates the weather from soil parameters this node does
+  not own -- but it has to be labelled, so the README, the Modelfile's
+  `not_for` and `check_weather.py` all name it. The check runs potential,
+  rainfed and irrigated on the driest region in the output and asserts the
+  relationship between them; the old 5-25 t/ha band could not fail. Brief
+  `docs/features/0002-declare-production-level.md`.
 - **Container units, not CSV-file units.** See the PCSE contract section above.
   The CSV sidecar matches the JSON, so it is deliberately not a drop-in for
   `pcse.input.CSVWeatherDataProvider`.
@@ -278,12 +288,33 @@ platform validator; longer prose belongs in the README. Validate from the
 - `check_weather.py` on the full default run: **123/123 checks pass**. That
   includes a real `Wofost72_PP` maize simulation on the Iowa series (sown
   2026-05-01, anthesis 2026-06-30, maturity 2026-08-13, TWSO 10,926 kg/ha,
-  LAImax 4.22 -- all credible for central Iowa), the six weather variables
+  LAImax 4.22 -- **potential production**, so no water, nutrient or pest
+  limitation: the perfectly irrigated case, not a yield forecast), the six
+  weather variables
   reading back unchanged through `WeatherDataContainer`, PCSE's own unit strings
   matching, `WIND_10M_TO_2M` equal to `pcse.util.wind10to2`, and the
   hand-worked GDD and stress cases, and (added after the Copilot review) five
   payload guards proving a malformed Open-Meteo response exits 1 with a readable
   reason rather than a traceback.
+### Verified results (2026-09-20, brief 0002)
+
+- `check_weather.py` on the full default run: **128/128 checks pass**, up from
+  123 because the maize now runs at three production levels instead of one. On
+  the ten-region run the check picks **South Dakota**, the driest region that
+  season (33.6 cm of rain from 1 May to 30 September): potential TWSO 10,242
+  kg/ha, rainfed 5,942 (42 percent below), irrigated 10,242 with 38.2 cm of
+  water applied. Irrigating the water-limited run reproduces the potential
+  yield exactly, which is the assertion that pins down what the published
+  figure means.
+- Negative test for the new assertion: shrinking `IRRIGATION_AMOUNT_CM` from
+  2.5 to 0.01 makes the reconstruction check fail (irrigated 5,947 vs potential
+  10,242) and the script exit 1. Restored, it is 128/128 and exit 0. The old
+  `5000 <= TWSO <= 25000` band passed every one of those cases, which is why it
+  was never the assertion it looked like.
+- `Modelfile.toml` still validates clean (`OK`, no annotation warnings) with
+  `not_for` at 503 characters and `validity_domain` untouched at 551, both
+  inside the platform's 600-character cap.
+
 - Sample (2026-09-15, 3 regions): 819 rows, 51 forecast, 3 s.
 - Full default run (empty input, 10 regions): 2,770 rows, 210 forecast, 19.6 s.
   Resolved defaults are today / Jan 1 / 15 / 10 / 30 / 0 / 32. Ranges are sane:
@@ -305,9 +336,17 @@ platform validator; longer prose belongs in the README. Validate from the
 2. Mark the PR ready once AC-9 passes; John merges.
 3. After merge: register on Model Home from `main` and put it on a daily
    schedule with `{}`.
-4. Follow-ups: NASA POWER for the observed leg; crop-reporting-district
-   granularity; wheat and soy parameter sets; `TEMP` as an explicit column if
-   the crop model wants it rather than PCSE's `(TMIN+TMAX)/2` default.
+4. Follow-ups: **irrigated / rainfed region strata** -- check whether NASS
+   publishes county-level `CORN, GRAIN, IRRIGATED - PRODUCTION` widely enough,
+   given disclosure withholding, to split each state's representative point in
+   two (the point is production-weighted over all corn today, which in NE and
+   KS pulls it towards irrigated acres); the **maize variety**, since
+   `Grain_maize_201` matures 13 August from a 1 May sowing, a 104-day season
+   against roughly 140 for a US Corn Belt hybrid, probably a larger error
+   source in Iowa than water is; NASA POWER for the observed leg;
+   crop-reporting-district granularity; wheat and soy parameter sets; `TEMP` as
+   an explicit column if the crop model wants it rather than PCSE's
+   `(TMIN+TMAX)/2` default.
 
 ## Task list
 
