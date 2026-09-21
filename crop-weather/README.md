@@ -130,6 +130,40 @@ class CropWeatherProvider(WeatherDataProvider):
 `check_weather.py` runs exactly that and then a full WOFOST maize simulation on
 the result, which is how this bundle proves it works.
 
+### The validation yield is potential production
+
+The yield that simulation reports is **potential production**: WOFOST's
+radiation- and temperature-limited level, with no water, nutrient or pest
+limitation at all. Assuming water is never limiting is the same thing as
+assuming perfect irrigation, applied the instant the crop wants it, free, on
+every acre -- so the figure is the fully-irrigated case, and it is not a yield
+forecast for anybody's field or state.
+
+That is the right default for a *weather* bundle, because it isolates the
+weather from soil parameters this node does not own and does not ship. It is
+only misleading when it goes unlabelled, which is why the check now runs three
+production levels and asserts the relationship between them rather than
+asserting that one number falls in a wide band.
+
+Measured on the 2026 season, maize sown 1 May, `Grain_maize_201`, on PCSE's
+generic `DummySoilDataProvider`:
+
+| region | potential | rainfed | irrigated | water applied |
+|---|---|---|---|---|
+| IA | 10,926 | 10,799 | 10,926 | 18.0 cm |
+| NE | 9,892 | 8,673 | 9,892 | 29.2 cm |
+| KS | 8,746 | 5,940 | 8,746 | 54.0 cm |
+
+TWSO in kg/ha. Irrigating the water-limited run reproduces the potential yield
+exactly, in every region -- which is the point. How far rainfed falls below it
+is entirely a matter of where you are: 1.2 percent in Iowa that season, 32
+percent in Kansas.
+
+The soil is generic rather than real, so these show direction and rough
+magnitude, not a calibrated yield. Water-limited production belongs to
+`wofost-bundles/corn-yield`, which owns the soil and the crop; this node only
+has to be honest about what its own validation run means.
+
 ## Where the weather comes from
 
 [Open-Meteo](https://open-meteo.com/), free and keyless, two calls per region:
@@ -273,6 +307,19 @@ PCSE is a development dependency only and never appears in the Dockerfile.
 GDD and stress arithmetic against hand-worked examples, the region table, the
 shape of the output, and -- the decisive one -- loading the output into a real
 `WeatherDataProvider` and running WOFOST maize to a finished yield.
+
+The maize runs three times, on whichever region in the output saw the least
+rain between 1 May and 30 September, since that is where water actually binds:
+potential production, water-limited rainfed, and water-limited with irrigation
+triggered when root-zone soil moisture falls through 0.25. Three assertions
+follow, and each can fail:
+
+- irrigating the water-limited run reproduces the potential yield to within 1
+  percent, which is what pins down what the published figure means;
+- potential is at least rainfed, within 1 percent -- the tolerance is there
+  because a mild deficit lowers LAI and WOFOST's partitioning can repay a
+  little of that, so rainfed occasionally edges above potential;
+- the water balance actually applied irrigation.
 
 ## Files
 

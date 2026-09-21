@@ -5,8 +5,18 @@ Validation for the crop-weather bundle. Not part of the model image.
 This is the decisive test for the whole node: the output exists to be eaten by
 PCSE/WOFOST, so the check loads it into a real WeatherDataProvider and runs a
 maize simulation to a finished yield. Loading alone is not enough -- a unit slip
-can load fine and produce nonsense -- so the run has to complete and the yield
-has to be credible.
+can load fine and produce nonsense -- so the run has to complete and the yields
+have to stand in the right relationship to each other.
+
+The maize runs at three production levels: potential, water-limited rainfed,
+and water-limited with soil-moisture-triggered irrigation. Potential production
+is what this bundle reports, and it is the right default here because it
+isolates the weather from soil parameters this node does not own -- but it
+assumes water is never limiting, which is the same thing as perfect irrigation
+on every acre. Running all three makes that explicit and gives assertions that
+can fail: irrigating a water-limited run has to reproduce the potential yield.
+The soil is PCSE's generic DummySoilDataProvider, not a real one, so the
+numbers show direction and rough magnitude only.
 
 It also checks the unit conversions against PCSE's own helpers, the growing
 degree day and stress-flag arithmetic against hand-worked examples, and the
@@ -24,7 +34,7 @@ import csv
 import json
 import math
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import runner
@@ -288,11 +298,116 @@ def build_provider(rows, angstrom_a, angstrom_b):
     return CropWeatherProvider()
 
 
-def check_pcse(output):
-    print("PCSE / WOFOST")
+# Soil-moisture-triggered irrigation for the water-limited comparison below.
+#
+# Amounts are in cm, not mm: WaterbalanceFD._on_IRRIGATE sets
+# RIRR = amount * efficiency, and RIRR is cm/day
+# (pcse/soil/classic_waterbalance.py, verified against PCSE 6.0.13). PCSE's own
+# TimedEvents docstring says "All irrigation amounts in mm"; that is free text
+# in an example and it is wrong for the classic water balance.
+#
+# DummySoilDataProvider has SMFCF 0.30 and SMW 0.10, so triggering at SM 0.25
+# is about 75 percent of available water -- a typical centre-pivot trigger.
+IRRIGATION_TRIGGER_SM = 0.25
+IRRIGATION_AMOUNT_CM = 2.5
+IRRIGATION_EFFICIENCY = 0.90
+
+# WAV is initial profile water in cm. The potential run uses 100, the top of
+# PCSE's allowed range, which is harmless where the soil is ignored and absurd
+# under a water balance; the water-limited runs start near field capacity.
+WAV_POTENTIAL_CM = 100.0
+WAV_WATER_LIMITED_CM = 20.0
+SMLIM_WATER_LIMITED = 0.30
+
+MAIZE_VARIETY = "Grain_maize_201"
+
+
+def season_rain_cm(rows, year):
+    """Total RAIN over the maize season, in cm. Used only to pick a region."""
+    start, end = f"{year}-05-01", f"{year}-09-30"
+    return sum(r["RAIN"] for r in rows if start <= r["date"] <= end)
+
+
+def driest_region(output):
+    """The region key with the least in-season rain in this output.
+
+    The three production levels only say anything where water actually binds,
+    and that is not reliably the first region in the file: on the 2026 series
+    Iowa's rainfed crop came within 1.2 percent of potential while Kansas's was
+    32 percent below it. Picking by rainfall keeps the check meaningful for the
+    sample input and the full ten-region run alike.
+    """
+    by_region = {}
+    for row in output["rows"]:
+        by_region.setdefault(row["region_key"], []).append(row)
+    year = date.fromisoformat(output["rows"][0]["date"]).year
+    rain = {k: season_rain_cm(rows, year) for k, rows in by_region.items()}
+    key = min(rain, key=rain.get)
+    return key, by_region[key], rain[key]
+
+
+def maize_agro(first_day, sowing, end, irrigated):
+    """Agromanagement for one maize season, optionally irrigated."""
+    state_events = None
+    if irrigated:
+        state_events = [{
+            "event_signal": "irrigate",
+            "event_state": "SM",
+            "zero_condition": "falling",
+            "name": "soil-moisture-triggered irrigation",
+            "comment": "amounts in cm",
+            "events_table": [{IRRIGATION_TRIGGER_SM: {
+                "amount": IRRIGATION_AMOUNT_CM,
+                "efficiency": IRRIGATION_EFFICIENCY,
+            }}],
+        }]
+    campaigns = [{
+        first_day: {
+            "CropCalendar": {
+                "crop_name": "maize",
+                "variety_name": MAIZE_VARIETY,
+                "crop_start_date": sowing,
+                "crop_start_type": "sowing",
+                "crop_end_date": end,
+                "crop_end_type": "harvest",
+                "max_duration": 300,
+            },
+            "TimedEvents": None,
+            "StateEvents": state_events,
+        }
+    }]
+    if state_events:
+        # PCSE refuses a final campaign carrying StateEvents unless a trailing
+        # empty campaign bounds it, and that date has to be inside the series.
+        campaigns.append({end + timedelta(days=1): None})
+    return campaigns
+
+
+def run_maize(model_cls, rows, angstrom, first_day, sowing, end, wav, irrigated):
+    """One WOFOST run. Returns (summary row, total irrigation in cm)."""
     from pcse.input import YAMLCropDataProvider, WOFOST72SiteDataProvider, DummySoilDataProvider
     from pcse.base import ParameterProvider
-    from pcse.models import Wofost72_PP
+
+    parameters = ParameterProvider(
+        cropdata=YAMLCropDataProvider(),
+        soildata=DummySoilDataProvider(),
+        sitedata=WOFOST72SiteDataProvider(WAV=wav, SMLIM=SMLIM_WATER_LIMITED))
+    model = model_cls(
+        parameters,
+        build_provider(rows, angstrom["angstrom_a"], angstrom["angstrom_b"]),
+        maize_agro(first_day, sowing, end, irrigated))
+    model.run_till_terminate()
+    summary = model.get_summary_output()
+    # TOTIRR is a state of the water balance, so the potential-production
+    # model does not have one. Ask the class rather than catching a lookup
+    # failure, which would also hide a real one.
+    totirr = model.get_variable("TOTIRR") if model_cls.__waterbalance__ else None
+    return (summary[0] if summary else None), totirr
+
+
+def check_pcse(output):
+    print("PCSE / WOFOST")
+    from pcse.models import Wofost72_PP, Wofost72_WLP_CWB
 
     rows = [r for r in output["rows"] if r["region_key"] == output["rows"][0]["region_key"]]
     key = rows[0]["region_key"]
@@ -319,50 +434,71 @@ def check_pcse(output):
           str([getattr(back, n) for n in ("E0", "ES0", "ET0")]))
 
     # The real test: run maize to a finished yield on this weather.
-    first_day = date.fromisoformat(rows[0]["date"])
-    last_day = date.fromisoformat(rows[-1]["date"])
+    #
+    # Potential production is the right default for a weather bundle -- it
+    # isolates the weather from soil parameters this node does not own -- but
+    # it assumes water is never limiting, which is the same thing as perfect
+    # irrigation on every acre. So run all three levels and assert the
+    # relationship between them, rather than asserting that one unlabelled
+    # number falls in a wide band.
+    crop_key, crop_rows, rain_cm = driest_region(output)
+    crop_angstrom = output["metadata"]["angstrom"][crop_key]
+    first_day = date.fromisoformat(crop_rows[0]["date"])
+    last_day = date.fromisoformat(crop_rows[-1]["date"])
     sowing = date(first_day.year, 5, 1)
-    end = min(last_day, date(first_day.year, 9, 30))
+    # One spare day at the end: the irrigated run's trailing campaign needs it.
+    end = min(last_day - timedelta(days=1), date(first_day.year, 9, 30))
     if not (first_day <= sowing and (end - sowing).days >= 120):
         print(f"  skip  window {first_day}..{last_day} is too short for a maize season; "
               f"run the model with a date in or after September to exercise this check")
         return
-    agro = [{
-        first_day: {
-            "CropCalendar": {
-                "crop_name": "maize",
-                "variety_name": "Grain_maize_201",
-                "crop_start_date": sowing,
-                "crop_start_type": "sowing",
-                "crop_end_date": end,
-                "crop_end_type": "harvest",
-                "max_duration": 300,
-            },
-            "TimedEvents": None,
-            "StateEvents": None,
-        }
-    }]
-    parameters = ParameterProvider(
-        cropdata=YAMLCropDataProvider(),
-        soildata=DummySoilDataProvider(),
-        sitedata=WOFOST72SiteDataProvider(WAV=100))
-    model = Wofost72_PP(parameters, provider, agro)
-    model.run_till_terminate()
-    summary = model.get_summary_output()
-    check("WOFOST ran to termination and produced a summary", bool(summary), str(summary))
-    if not summary:
-        return
-    result = summary[0]
-    twso = result.get("TWSO")
-    print(f"        {key}: sown {result.get('DOS')}, anthesis {result.get('DOA')}, "
-          f"maturity {result.get('DOM')}, TWSO {twso} kg/ha, LAIMAX {result.get('LAIMAX')}")
-    check("potential grain yield is credible for corn (5-25 t/ha)",
-          twso is not None and 5000 <= twso <= 25000, str(twso))
-    check("the crop reached anthesis", result.get("DOA") is not None)
-    check("the crop reached maturity inside the window", result.get("DOM") is not None)
+
+    print(f"        {crop_key} is the driest region in this run "
+          f"({rain_cm:.1f} cm of rain from {sowing} to 30 September); "
+          f"maize sown {sowing}, {MAIZE_VARIETY}")
+    levels = {}
+    for label, model_cls, wav, irrigated in (
+            ("potential", Wofost72_PP, WAV_POTENTIAL_CM, False),
+            ("rainfed", Wofost72_WLP_CWB, WAV_WATER_LIMITED_CM, False),
+            ("irrigated", Wofost72_WLP_CWB, WAV_WATER_LIMITED_CM, True)):
+        result, totirr = run_maize(model_cls, crop_rows, crop_angstrom,
+                                   first_day, sowing, end, wav, irrigated)
+        check(f"WOFOST ran {label} production to termination", bool(result), str(result))
+        if not result:
+            return
+        levels[label] = (result, totirr)
+        print(f"        {label:10} anthesis {result.get('DOA')}, maturity {result.get('DOM')}, "
+              f"TWSO {result.get('TWSO'):.0f} kg/ha, LAImax {result.get('LAIMAX'):.2f}"
+              + ("" if totirr is None else f", irrigation {totirr:.1f} cm"))
+
+    potential = levels["potential"][0]["TWSO"]
+    rainfed = levels["rainfed"][0]["TWSO"]
+    irrigated_twso, applied_cm = levels["irrigated"][0]["TWSO"], levels["irrigated"][1]
+
+    # The claim this bundle publishes: the potential figure is the perfectly
+    # irrigated case. Irrigating a water-limited run has to reproduce it.
+    check("irrigation reconstructs potential production to within 1 percent",
+          abs(irrigated_twso - potential) <= 0.01 * potential,
+          f"irrigated {irrigated_twso:.0f} vs potential {potential:.0f} kg/ha")
+    # Ordering, with a tolerance: a mild deficit lowers LAI and WOFOST's
+    # partitioning can repay a little of that, so rainfed is allowed to edge
+    # just above potential. A RAIN unit slip would break this by far more.
+    check("potential production is at least rainfed production, within 1 percent",
+          potential >= rainfed - 0.01 * potential,
+          f"potential {potential:.0f} vs rainfed {rainfed:.0f} kg/ha")
+    check("the water balance actually applied irrigation",
+          applied_cm is not None and applied_cm > 0.0, str(applied_cm))
+
+    # Smoke test, no longer the only assertion about the yield.
+    check("potential grain yield is in the right order of magnitude (5-25 t/ha)",
+          5000 <= potential <= 25000, str(potential))
+    check("the crop reached anthesis", levels["potential"][0].get("DOA") is not None)
+    check("the crop reached maturity inside the window",
+          levels["potential"][0].get("DOM") is not None)
     check("peak leaf area index is credible (2-10)",
-          result.get("LAIMAX") is not None and 2.0 <= result["LAIMAX"] <= 10.0,
-          str(result.get("LAIMAX")))
+          levels["potential"][0].get("LAIMAX") is not None
+          and 2.0 <= levels["potential"][0]["LAIMAX"] <= 10.0,
+          str(levels["potential"][0].get("LAIMAX")))
 
 
 # --- output document ---------------------------------------------------------
