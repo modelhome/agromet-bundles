@@ -360,14 +360,15 @@ this change and its 2026-09-20 entry is left as it stands.
 there is no separate unit-test harness in this repo, and none should be
 invented for this change.
 
-**Note on the sample input.** `sample_input.json` is 2026-09-15 with Iowa,
-Illinois and Nebraska, and it **does** name `ne`, with the blended coordinates
-41.1658, -98.3301. It supplies those coordinates inline, so the run will not
-fail -- `_parse_region` accepts any key -- which is precisely the problem: left
-alone it would silently keep demonstrating a retired key and the pre-split
-point this change exists to replace. Replace that entry with `ne_irrigated`
-(41.1699, -98.6459) so the committed sample shows the new shape; the elevation
-must come from the rebuilt `regions.csv`, not be carried over.
+**Note on the sample input (resolved).** `sample_input.json` is 2026-09-15 with
+Iowa, Illinois and Nebraska, and it named `ne` with the blended coordinates
+41.1658, -98.3301. It supplied those coordinates inline, so the run would not
+have failed -- `_parse_region` accepts any key -- which was precisely the
+problem: left alone it would have gone on demonstrating a retired key and the
+pre-split point this change exists to replace. **Done:** that entry is now
+`ne_irrigated` at 41.1699, -98.6459, 596 m, with the elevation taken from the
+rebuilt `regions.csv` rather than carried over, and `stratum` set so the sample
+shows the new shape. Verified: 819 rows, 45 forecast.
 
 ## Implementation steps
 
@@ -496,3 +497,37 @@ must come from the rebuilt `regions.csv`, not be carried over.
   (which would supersede the whole representative-point approach), the maize
   variety, NASA POWER, wheat and soy parameter sets, and `TEMP` as an explicit
   column.
+
+## Review findings addressed
+
+Copilot's review of PR #3: four findings, all low severity, all confirmed and
+fixed in a follow-up commit on the same branch. None changed behaviour; three
+were documentation accuracy and one was a stale instruction in this plan.
+
+1. **The README's centroid summary claimed total county production for every
+   point** (`crop-weather/README.md`). True for the eight unsplit states, false
+   for the four split points, whose counties are weighted by *apportioned*
+   production. A consumer reading only the summary would have taken away the
+   wrong method. Fixed: the sentence now distinguishes the two cases and points
+   at the derivation below it.
+
+2. **`weight` is normalized across the file, not within a state** (the most
+   substantive of the four). The README told a consumer to "combine the two
+   results using `weight`" without saying to normalize by the state's own
+   total. Verified the trap numerically on the measured Nebraska strata:
+   `0.0808 * 9803 + 0.0462 * 9835` is **1,246.5**, which is Nebraska's
+   *contribution to the ten-state total*, not a yield; the state figure is
+   **9,814.6 kg/ha**, and only appears after dividing by 0.1270. The raw number
+   is wrong in a way that still looks like a number, which is what makes it
+   worth spelling out. Fixed: the README now gives both forms explicitly, with
+   the divisor named.
+
+3. **The `build_regions.py` docstring said four NASS series, the code selects
+   five.** Production, total acres, irrigated acres, and *two* yield series.
+   Fixed to five, with the irrigated-acres series marked as read at both county
+   and state level so the count and the list agree.
+
+4. **This plan still carried an imperative instruction to replace `ne`** while
+   marked `implemented`, contradicting the committed sample. Fixed: that note
+   now records what was done and the 819-row verification, rather than asking
+   for it.

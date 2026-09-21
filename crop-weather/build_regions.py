@@ -13,10 +13,11 @@ Sources, both public and neither needing an API key:
 - USDA NASS, 2022 Census of Agriculture, from the Quick Stats bulk export at
   https://www.nass.usda.gov/datasets/qs.census2022.txt.gz (about 310 MB
   gzipped). The Census is a complete enumeration with county coverage, so it
-  needs none of the Quick Stats API's key handling. Four series are read, all
+  needs none of the Quick Stats API's key handling. Five series are read, all
   at DOMAIN_DESC = TOTAL: county "CORN, GRAIN - PRODUCTION, MEASURED IN BU",
-  county "CORN, GRAIN - ACRES HARVESTED", county and state "CORN, GRAIN,
-  IRRIGATED - ACRES HARVESTED", and the two state-level stratum yields below.
+  county "CORN, GRAIN - ACRES HARVESTED", "CORN, GRAIN, IRRIGATED - ACRES
+  HARVESTED" at both county and state level, and the two state-level stratum
+  yields below.
 - US Census Bureau 2023 Gazetteer county file, for each county's internal point
   (INTPTLAT / INTPTLONG).
 

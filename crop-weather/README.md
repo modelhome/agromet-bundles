@@ -262,8 +262,10 @@ Census of Agriculture**: IA, IL, MN, NE, IN, SD, OH, WI, KS, MO. They are
 reported as **twelve regions**, because Nebraska and Kansas are each split into
 an irrigated and a rainfed point.
 
-Each point is the **production-weighted centroid** of county internal points,
-weighting each county by its corn-for-grain production. County coordinates come
+Each point is the **production-weighted centroid** of county internal points.
+For the eight unsplit states each county is weighted by its whole corn-for-grain
+production; for a split state's two points, by the part of that production
+apportioned to the stratum, which is derived below. County coordinates come
 from the **US Census Bureau 2023 Gazetteer** county file; elevation is
 Open-Meteo's terrain height at the chosen point, so it matches the grid the
 weather comes from.
@@ -353,13 +355,26 @@ This change moves it, once:
 nothing rather than silently getting the wrong answer, which is the reason the
 old keys were retired rather than kept alongside the new ones.
 
-A consumer that wants one result per state should run its model on each stratum
-and combine the two results using `weight`, which is each region's share of the
-whole region set's corn production and sums to 1 across the file. A consumer
-that wants one series per state regardless should group by `state`, which is
-still the two-letter code on every row. Summing rows without either will now
-double-count nothing -- each acre appears once -- but will treat Nebraska's two
-points as two independent places, which they are.
+`weight` is each region's share of the **whole region set's** corn production,
+so the twelve weights sum to 1. It is not normalized within a state, and that
+distinction decides how you combine the strata:
+
+- **For a whole-region-set aggregate**, use the weights raw:
+  `sum(weight * result)` over all twelve rows.
+- **For one result for a single state**, normalize by that state's own total
+  first, or the answer comes out scaled by the state's share of the region set:
+
+  ```
+  nebraska = (0.0808 * irrigated + 0.0462 * rainfed) / (0.0808 + 0.0462)
+  ```
+
+  The divisor is Nebraska's 0.1270. Leaving it out gives you Nebraska's
+  contribution to the ten-state total, not Nebraska's yield.
+
+A consumer that wants one series per state regardless should group by `state`,
+which is still the two-letter code on every row. Summing rows without either
+will now double-count nothing -- each acre appears once -- but will treat
+Nebraska's two points as two independent places, which they are.
 
 `stratum` is `irrigated`, `rainfed`, or `all` for a state that is not split.
 Both `stratum` and `weight` appear in each output's `metadata.regions`, so a
