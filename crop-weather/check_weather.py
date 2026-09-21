@@ -157,6 +157,145 @@ def check_payload_guards():
         check("an empty daily block raises RunError", True)
 
 
+# --- the forecast tail -------------------------------------------------------
+# Open-Meteo publishes the last slot of its 16-day grid before its model run
+# has filled it: the date is in `time` and every variable on it is null. These
+# checks pin down which shapes of missing day are tolerated and which fail.
+# They stub runner.get_json, so they make no network call and cannot be turned
+# green or red by what the live API happens to be serving.
+
+TAIL_TODAY = date(2026, 9, 21)
+TAIL_START = date(2026, 9, 10)
+# ERA5 lags about six days, so the archive leg stops well short of today.
+TAIL_ARCHIVE_END = date(2026, 9, 15)
+
+
+def days_between(first, last):
+    return [first + timedelta(days=n) for n in range((last - first).days + 1)]
+
+
+def daily_block(days, blank=(), partial=()):
+    """
+    An Open-Meteo daily block over `days`.
+
+    Every variable is null on a `blank` day, which is how the API advertises a
+    slot it has not filled. Only the last variable is null on a `partial` day,
+    which is missing data and must not be mistaken for the same thing.
+    """
+    last_variable = runner.DAILY_VARIABLES[-1]
+    block = {"time": [day.isoformat() for day in days]}
+    for offset, name in enumerate(runner.DAILY_VARIABLES):
+        block[name] = [
+            None if day in blank or (day in partial and name == last_variable)
+            else float(offset + 1)
+            for day in days]
+    return {"daily": block}
+
+
+def fetch_stubbed(first_day, last_day, archive, forecast, today=TAIL_TODAY):
+    """runner.fetch_window over canned payloads instead of the live API."""
+    real = runner.get_json
+    runner.get_json = (
+        lambda url, params: archive if url == runner.ARCHIVE_URL else forecast)
+    try:
+        return runner.fetch_window(
+            {"region_key": "test", "lat": 42.0, "lon": -93.0},
+            first_day, last_day, today)
+    finally:
+        runner.get_json = real
+
+
+def expect_run_error(label, first_day, last_day, archive, forecast, needle,
+                     today=TAIL_TODAY):
+    try:
+        fetch_stubbed(first_day, last_day, archive, forecast, today)
+        check(label, False, "no error raised")
+    except runner.RunError as exc:
+        check(label, needle in str(exc), str(exc))
+
+
+def check_fetch_window():
+    print("forecast tail")
+    last_day = TAIL_TODAY + timedelta(days=runner.DEFAULT_FORECAST_DAYS)  # 2026-10-06
+    archive = daily_block(days_between(TAIL_START, TAIL_ARCHIVE_END))
+    forecast_days = days_between(TAIL_ARCHIVE_END + timedelta(days=1), last_day)
+
+    # The condition this brief exists for: the grid's last day is all nulls.
+    padded = daily_block(forecast_days, blank=[last_day])
+    served_last = (last_day - timedelta(days=1)).isoformat()
+    try:
+        window = fetch_stubbed(TAIL_START, last_day, archive, padded)
+    except runner.RunError as exc:
+        # Report it rather than letting it end the run: this is the assertion
+        # that fails when the tolerance is removed, and it should read as a
+        # failed check like any other.
+        check("a null-padded last forecast day shortens the window instead of failing",
+              False, str(exc))
+        window = None
+
+    if window is not None:
+        check("a null-padded last forecast day shortens the window instead of failing",
+              max(window) == served_last, max(window))
+        check("every other requested day is still served",
+              len(window) == len(days_between(TAIL_START, last_day - timedelta(days=1))),
+              str(len(window)))
+        check("the archive days are observed and the forecast days are flagged",
+              all(window[day.isoformat()][1] is False
+                  for day in days_between(TAIL_START, TAIL_ARCHIVE_END))
+              and all(window[day.isoformat()][1] is True
+                      for day in days_between(TAIL_ARCHIVE_END + timedelta(days=1),
+                                              last_day - timedelta(days=1))))
+
+        # Same payloads, same window: the served days are a function of the
+        # data, not of when the run happened.
+        again = fetch_stubbed(TAIL_START, last_day, archive, padded)
+        check("the same payloads give the same served window", list(again) == list(window))
+
+    # daily_payload drops a partly null day and an all-null day identically,
+    # so the reason a day is missing has to come from the payload itself.
+    # Only an advertised, all-null terminal date is the publication cycle.
+    partly_null = daily_block(forecast_days, partial=[last_day])
+    check("blank_days sees an all-null date and not a partly null one",
+          runner.blank_days(padded) == {last_day.isoformat()}
+          and runner.blank_days(partly_null) == set(),
+          f"{sorted(runner.blank_days(padded))} / {sorted(runner.blank_days(partly_null))}")
+    expect_run_error("a partly null last forecast day is a gap, not an unfilled slot",
+                     TAIL_START, last_day, archive, partly_null, last_day.isoformat())
+
+    # A date the response never advertised is not an unfilled slot either.
+    omitted = daily_block(forecast_days[:-1])
+    expect_run_error("a last forecast day absent from the response fails",
+                     TAIL_START, last_day, archive, omitted, last_day.isoformat())
+
+    # A hole with data after it is a real gap, not a publication lag.
+    interior = daily_block(forecast_days, blank=[date(2026, 9, 20)])
+    expect_run_error("a gap in the middle of the forecast still fails the run",
+                     TAIL_START, last_day, archive, interior, "2026-09-20")
+
+    # Two null days is upstream degradation, not the publication cycle.
+    two_short = daily_block(
+        forecast_days, blank=[last_day, last_day - timedelta(days=1)])
+    expect_run_error("a two-day null tail exceeds the tolerance and fails",
+                     TAIL_START, last_day, archive, two_short,
+                     "2 day(s) short of the requested window")
+
+    # A missing day the archive owes is never a trailing tail, even when it is
+    # the last day asked for.
+    short_archive = daily_block(days_between(TAIL_START, TAIL_ARCHIVE_END))
+    up_to_today = daily_block(
+        days_between(TAIL_ARCHIVE_END + timedelta(days=1), TAIL_TODAY),
+        blank=[TAIL_TODAY])
+    expect_run_error("a missing observed day fails even as the window's last day",
+                     TAIL_START, TAIL_TODAY, short_archive, up_to_today,
+                     "2026-09-21")
+
+    # Nothing in the requested window served at all.
+    elsewhere = daily_block(days_between(date(2025, 6, 1), date(2025, 6, 5)))
+    expect_run_error("a window served by neither endpoint fails",
+                     TAIL_START, last_day, elsewhere, elsewhere,
+                     "neither ERA5 nor a forecast")
+
+
 # --- growing degree days and stress -----------------------------------------
 
 def check_gdd():
@@ -578,8 +717,34 @@ def check_output(output):
     meta = output["metadata"]
     for field in ("date", "season_start", "retrieved_at", "data_source", "endpoints",
                   "gdd_base_c", "gdd_cap_c", "frost_threshold_c", "heat_threshold_c",
-                  "gdd_method", "angstrom", "regions", "pcse_convention"):
+                  "gdd_method", "angstrom", "regions", "pcse_convention",
+                  "forecast_days", "forecast_days_served",
+                  "window_requested", "window_served"):
         check(f"metadata records {field}", field in meta)
+
+    # A run can end a day short of what was asked for, but it may not do that
+    # silently: the served window has to match the rows and be readable from
+    # the output alone.
+    last_row_day = max(r["date"] for r in rows)
+    check("window_served ends on the last day in the table",
+          meta["window_served"][1] == last_row_day,
+          f"{meta['window_served'][1]} vs {last_row_day}")
+    check("window_served starts on the first day in the table",
+          meta["window_served"][0] == min(r["date"] for r in rows))
+    check("window_requested ends on date + forecast_days",
+          meta["window_requested"][1]
+          == (date.fromisoformat(meta["date"])
+              + timedelta(days=meta["forecast_days"])).isoformat(),
+          str(meta["window_requested"]))
+    check("forecast_days_served is the served days past date",
+          meta["forecast_days_served"]
+          == (date.fromisoformat(meta["window_served"][1])
+              - date.fromisoformat(meta["date"])).days,
+          f"{meta['forecast_days_served']} vs {meta['window_served'][1]}")
+    check("forecast_days_served never exceeds what was requested",
+          0 <= meta["forecast_days_served"] <= meta["forecast_days"],
+          f"{meta['forecast_days_served']} of {meta['forecast_days']}")
+
     by_region = {}
     for row in rows:
         by_region.setdefault(row["region_key"], []).append(row)
@@ -592,6 +757,13 @@ def check_output(output):
                   for a, b in zip(region_rows, region_rows[1:])))
         check(f"{key} observed days come before forecast days",
               [r["is_forecast"] for r in region_rows] == sorted(r["is_forecast"] for r in region_rows))
+    # One run, one window: a region whose forecast tail arrived short trims
+    # every region, so the table stays rectangular and window_served is true
+    # of all of them.
+    spans = {key: (rs[0]["date"], rs[-1]["date"]) for key, rs in by_region.items()}
+    check("every region covers the same days",
+          len(set(spans.values())) == 1 and len(set(map(len, by_region.values()))) == 1,
+          str(sorted(set(spans.values()))))
 
 
 def main():
@@ -599,6 +771,7 @@ def main():
     check_units()
     check_percentile()
     check_payload_guards()
+    check_fetch_window()
     check_gdd()
     check_regions()
     if path is None:

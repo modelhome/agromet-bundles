@@ -52,7 +52,7 @@ description = "The first day to report, as YYYY-MM-DD. Leave it out for 1 Januar
 [inputs.schema.properties.forecast_days]
 type = "integer"
 unit = "d"
-description = "How many days of forecast to add after the last observed day, 0 to 15. Leave it out for 15, which is as far ahead as the weather service reaches."
+description = "How many days of forecast to add after the last observed day, 0 to 15. Leave it out for 15, which is as far ahead as the weather service reaches. A run can return one day fewer, because the service publishes its last day before filling it; the result's forecast_days_served and window_served say what arrived."
 
 [inputs.schema.properties.gdd_base_c]
 type = "number"
@@ -126,7 +126,7 @@ description = "The season's table: one row per region and day, oldest day first 
 
 [outputs.schema.properties.metadata]
 type = "object"
-description = "When and how the run was made: date, season_start, forecast_days, retrieved_at, data_source, endpoints, the GDD and threshold settings, the GDD method, the Angstrom coefficients per region, the region table, and which PCSE unit convention the columns follow."
+description = "When and how the run was made: date, season_start, forecast_days and the forecast_days_served that actually arrived, window_requested and window_served, retrieved_at, data_source, endpoints, the GDD and threshold settings, the GDD method, the Angstrom coefficients per region, the region table, and which PCSE unit convention the columns follow."
 
 [outputs.schema.properties.columns]
 type = "array"

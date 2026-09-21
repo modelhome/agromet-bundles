@@ -11,7 +11,11 @@ field is optional, so a daily schedule can send ``{}``:
 - ``season_start``  -- ISO date the window starts. Defaults to 1 January of
                        ``date``'s year.
 - ``forecast_days`` -- days of forecast past ``date``. Defaults to 15, which is
-                       as far past today as Open-Meteo reaches.
+                       as far past today as Open-Meteo reaches. A run can end
+                       one day short of that when Open-Meteo has published the
+                       last slot of its grid without filling it; the metadata's
+                       ``forecast_days_served`` and ``window_served`` say what
+                       actually arrived, so a short window is never silent.
 - ``gdd_base_c`` / ``gdd_cap_c``           -- defaults 10 / 30 (corn).
 - ``frost_threshold_c`` / ``heat_threshold_c`` -- defaults 0 / 32 (corn).
 
@@ -60,6 +64,15 @@ DEFAULT_SUMMARY_PATH = Path("run") / "crop_weather_summary.output.json"
 DEFAULT_FORECAST_DAYS = 15
 MAX_FORECAST_DAYS = 15
 OPEN_METEO_FORECAST_DAYS_MAX = 16  # the API parameter's cap, today inclusive
+# The 16th slot is published before it is filled: the grid carries the date and
+# every variable on it is null until the model run catches up. Measured on
+# 2026-09-21 at three separate points, that last day was null at 05:04 UTC and
+# populated at 06:47 UTC; best_match takes it from GFS, while ecmwf_ifs025 was
+# two days shorter and icon_seamless three. So the default sits exactly on a
+# day that exists for part of the day only. One such day is tolerated: the
+# window shortens by one and the metadata says so. Two or more is a different
+# condition -- upstream degradation, not the publication cycle -- and fails.
+MAX_TRAILING_SHORTFALL_DAYS = 1
 MAX_PAST_DAYS = 92  # the forecast endpoint's cap on past_days
 # Corn. Base 10 degC / 50 degF and cap 30 degC / 86 degF are the US convention.
 DEFAULT_GDD_BASE_C = 10.0
@@ -179,6 +192,21 @@ def daily_payload(payload, url):
     return out
 
 
+def blank_days(payload):
+    """
+    The dates a payload advertises with *every* variable null.
+
+    That is the signature of a slot Open-Meteo has published but not filled,
+    and it is the only shape of missing day fetch_window tolerates. It is not
+    the same thing as "dropped by daily_payload", which also covers a day
+    short of one variable and says nothing about a date the response omits
+    altogether. Both of those are real gaps, so the reason has to survive.
+    """
+    daily = payload.get("daily") or {}
+    return {day for index, day in enumerate(daily.get("time", []))
+            if all(daily[name][index] is None for name in DAILY_VARIABLES)}
+
+
 def fetch_window(region, first_day, last_day, today):
     """
     {iso date: (values, is_forecast)} covering first_day..last_day inclusive.
@@ -186,6 +214,12 @@ def fetch_window(region, first_day, last_day, today):
     ERA5 is authoritative for every day it covers and lags about six days; the
     forecast endpoint fills the tail. A day neither endpoint serves fails the
     run rather than being interpolated or silently dropped.
+
+    The one exception is the end of the forecast leg. Open-Meteo publishes the
+    last slot of its grid before its model run has filled it, so the requested
+    window can end on a day that exists as a date and nulls. Up to
+    MAX_TRAILING_SHORTFALL_DAYS of those are tolerated and the returned window
+    is that much shorter; the caller reports the shortfall. Nothing else is.
     """
     base = {
         "latitude": f"{region['lat']:.4f}",
@@ -212,6 +246,7 @@ def fetch_window(region, first_day, last_day, today):
     missing = [day for day in wanted if day.isoformat() not in observed]
 
     forecast = {}
+    unfilled = set()
     if missing:
         # past_days and forecast_days count backwards and forwards from today.
         past_days = min(max((today - min(missing)).days, 0), MAX_PAST_DAYS)
@@ -222,6 +257,7 @@ def fetch_window(region, first_day, last_day, today):
             "forecast_days": ahead,
         })
         forecast = daily_payload(payload, FORECAST_URL)
+        unfilled = blank_days(payload)
 
     window = {}
     for day in wanted:
@@ -231,15 +267,41 @@ def fetch_window(region, first_day, last_day, today):
         elif key in forecast:
             window[key] = (forecast[key], True)
 
-    still_missing = [day.isoformat() for day in wanted if day.isoformat() not in window]
-    if still_missing:
-        raise RunError(
-            f"{region['region_key']}: Open-Meteo served neither ERA5 nor a forecast for "
-            f"{len(still_missing)} day(s): {still_missing[0]}"
-            + (f" .. {still_missing[-1]}" if len(still_missing) > 1 else "")
-            + f". The forecast reaches {OPEN_METEO_FORECAST_DAYS_MAX - 1} days past today "
-              f"({today}); the ERA5 archive lags it by about six days."
-        )
+    missing_days = [day for day in wanted if day.isoformat() not in window]
+    if missing_days:
+        served = [day for day in wanted if day.isoformat() in window]
+        last_served = max(served) if served else None
+        # A gap at the very end of the forecast leg is the publication cycle:
+        # Open-Meteo's grid advertises a day its model run has not filled, so
+        # the date is there and all six variables on it are null. Every other
+        # shape of gap is a real gap -- nothing served at all, a hole with data
+        # after it, a day the archive should have covered, a date the response
+        # left out, or a day short of only some of its variables, which is
+        # missing data rather than an unfilled slot.
+        trailing = ([day for day in missing_days
+                     if day > last_served and day > today
+                     and day.isoformat() in unfilled]
+                    if last_served is not None else [])
+        if len(trailing) != len(missing_days):
+            still_missing = [day.isoformat() for day in missing_days]
+            raise RunError(
+                f"{region['region_key']}: Open-Meteo served neither ERA5 nor a forecast for "
+                f"{len(still_missing)} day(s): {still_missing[0]}"
+                + (f" .. {still_missing[-1]}" if len(still_missing) > 1 else "")
+                + f". The forecast reaches {OPEN_METEO_FORECAST_DAYS_MAX - 1} days past today "
+                  f"({today}); the ERA5 archive lags it by about six days."
+            )
+        if len(trailing) > MAX_TRAILING_SHORTFALL_DAYS:
+            raise RunError(
+                f"{region['region_key']}: the forecast is {len(trailing)} day(s) short of the "
+                f"requested window ({trailing[0]} .. {trailing[-1]}), past the "
+                f"{MAX_TRAILING_SHORTFALL_DAYS}-day tail this model tolerates. The last day "
+                f"served is {last_served}. Open-Meteo publishes its final slot before filling "
+                f"it, so one short day is expected and more is not; ask for fewer "
+                f"forecast_days, or retry once the model run has caught up."
+            )
+        log(f"  {region['region_key']}: the forecast has not filled "
+            f"{trailing[0]} yet; this region reaches {last_served}")
     return window
 
 
@@ -493,11 +555,19 @@ def _parse_region(item, index):
 
 # --- output ------------------------------------------------------------------
 
-def run_metadata(end_date, season_start, forecast_days, params, regions, retrieved_at, angstrom):
+def run_metadata(end_date, season_start, forecast_days, params, regions, retrieved_at,
+                 angstrom, requested_last_day, served_last_day):
     return {
         "date": end_date.isoformat(),
         "season_start": season_start.isoformat(),
+        # forecast_days is what was asked for; forecast_days_served is what
+        # arrived. They differ when Open-Meteo had not filled the last slot of
+        # its grid yet, which shortens the window by a day. A consumer should
+        # read the served pair, not assume a fixed length.
         "forecast_days": forecast_days,
+        "forecast_days_served": max((served_last_day - end_date).days, 0),
+        "window_requested": [season_start.isoformat(), requested_last_day.isoformat()],
+        "window_served": [season_start.isoformat(), served_last_day.isoformat()],
         "retrieved_at": retrieved_at,
         "data_source": DATA_SOURCE,
         "endpoints": {"archive": ARCHIVE_URL, "forecast": FORECAST_URL},
@@ -560,12 +630,27 @@ def main():
         log(f"{len(regions)} regions, {season_start} .. {last_day} "
             f"({(last_day - season_start).days + 1} days)")
 
+        # Fetch every region first. A region whose forecast tail is not filled
+        # yet comes back short (see fetch_window), and the whole run is then
+        # trimmed to the last day every region can serve, so the table stays
+        # rectangular and one window describes the run.
+        windows = {}
+        for number, region in enumerate(regions, start=1):
+            log(f"[{number}/{len(regions)}] {region['region_key']}")
+            windows[region["region_key"]] = fetch_window(
+                region, season_start, last_day, today)
+
+        served_last = min(date.fromisoformat(max(window)) for window in windows.values())
+        if served_last < last_day:
+            log(f"the forecast reaches {served_last}, {(last_day - served_last).days} day(s) "
+                f"short of the requested {last_day}; the run stops there")
+
         rows = []
         rows_by_region = {}
         angstrom = {}
-        for number, region in enumerate(regions, start=1):
-            log(f"[{number}/{len(regions)}] {region['region_key']}")
-            window = fetch_window(region, season_start, last_day, today)
+        for region in regions:
+            window = {day: value for day, value in windows[region["region_key"]].items()
+                      if date.fromisoformat(day) <= served_last}
             region_rows, region_angstrom = daily_rows(region, window, params)
             rows_by_region[region["region_key"]] = region_rows
             angstrom[region["region_key"]] = region_angstrom
@@ -574,8 +659,8 @@ def main():
         log(f"error: {exc}")
         sys.exit(1)
 
-    metadata = run_metadata(
-        end_date, season_start, forecast_days, params, regions, retrieved_at, angstrom)
+    metadata = run_metadata(end_date, season_start, forecast_days, params, regions,
+                            retrieved_at, angstrom, last_day, served_last)
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     # Compact JSON: 10 regions x ~290 days is ~2,900 rows, which indentation
     # would roughly double.
