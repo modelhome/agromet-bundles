@@ -1,5 +1,5 @@
 name = "US Corn Crop Weather"
-description = "The daily weather a corn crop model runs on, for the ten biggest US corn states. Each state is represented by one point weighted towards where its corn actually grows. Covers 1 January through today plus a two-week forecast, and reports temperature, sunlight, humidity, wind and rain in exactly the form the WOFOST crop model expects, alongside accumulated growing degree days and counts of frost and heat-stress days. Run it with an empty input to get the season so far; built to run once a day."
+description = "The daily weather a corn crop model runs on, for the ten biggest US corn states. Each state is represented by a point weighted towards where its corn actually grows; Nebraska and Kansas carry two, one for irrigated corn and one for rainfed. Covers 1 January through today plus a two-week forecast, and reports temperature, sunlight, humidity, wind and rain in exactly the form the WOFOST crop model expects, alongside accumulated growing degree days and counts of frost and heat-stress days. Run it with an empty input to get the season so far; built to run once a day."
 # Prints the crop_weather_daily table JSON to stdout; the platform redirects it
 # to the output file. The runner writes crop_weather_summary itself, to the path
 # in args.
@@ -16,12 +16,12 @@ args = ["{input:crop_weather_request}", "{output:crop_weather_summary}"]
 # reflects current data and current code. `retrieved_at` records when.
 determinism = "deterministic"
 expected_runtime = "seconds"
-validity_domain = "US corn regions (land points) for dates Open-Meteo serves: ERA5 from 1940, forecasts to 15 days past today. One point per state, the production-weighted centroid of its county corn production, so values describe the state's corn area, not one field. Columns follow pcse.base.WeatherDataContainer (PCSE 6.0.13): TMIN/TMAX degC, IRRAD J/m2/day, VAP hPa, WIND m/s at 2 m, RAIN cm/day, not PCSE's CSV file convention. E0, ES0 and ET0 are not computed here. GDD is capped-average from season_start; base, cap and both thresholds are inputs. See the README."
+validity_domain = "US corn regions (land points) for dates Open-Meteo serves: ERA5 from 1940, forecasts to 15 days past today. One point per region: the production-weighted centroid of county corn production, split into irrigated and rainfed points in NE and KS, so values describe a corn area, not one field. Columns follow pcse.base.WeatherDataContainer (PCSE 6.0.13): TMIN/TMAX degC, IRRAD J/m2/day, VAP hPa, WIND m/s at 2 m, RAIN cm/day, not PCSE's CSV file convention. E0, ES0 and ET0 are not computed here. GDD is capped-average from season_start; base, cap and both thresholds are inputs. See the README."
 not_for = "Field-level agronomic decisions (these are state-scale representative points, not your farm), official crop forecasts (use USDA NASS), or any use where a revised forecast day would be mistaken for an observation. Off-season output is valid but quiet; the series is most meaningful from about April to October. The bundle's own WOFOST check is a potential-production run, which assumes water is never limiting (the perfectly irrigated case); it is a test of this weather, not a yield anyone should quote."
 provenance = "Weather: Open-Meteo (ERA5 archive + forecast API, CC BY 4.0). Region production weights: USDA NASS 2022 Census of Agriculture, county corn for grain. County coordinates: US Census Bureau 2023 Gazetteer. Unit conventions and the Angstrom estimator follow PCSE 6.0.13. See the bundle README."
 
 [resources]
-# Ten regions, two HTTP calls each, and plain-Python arithmetic over ~280 days.
+# Twelve regions, two HTTP calls each, and plain-Python arithmetic over ~280 days.
 memory = "512Mi"
 cpu = "1"
 
@@ -31,12 +31,12 @@ cpu = "1"
 # paste" exactly that; a fixed date there would freeze every schedule built
 # from it on one day.
 name = "crop_weather_request"
-description = "Which day, which places and which crop thresholds to report. Leave empty for today, the ten built-in corn states and corn's own thresholds."
+description = "Which day, which places and which crop thresholds to report. Leave empty for today, the twelve built-in corn places and corn's own thresholds."
 
 [inputs.schema]
 type = "object"
 required = []
-description = "Leave this empty to get the season so far for the ten biggest US corn states. Fill in a field only to look at a different day, different places, or a different crop."
+description = "Leave this empty to get the season so far for the ten biggest US corn states, as twelve places. Fill in a field only to look at a different day, different places, or a different crop."
 default = {}
 
 [inputs.schema.properties.date]
@@ -76,7 +76,7 @@ description = "A day whose highest temperature is at or above this counts as a h
 
 [inputs.schema.properties.regions]
 type = "array"
-description = "Places to report instead of the ten built-in states. Each one needs its own coordinates and elevation."
+description = "Places to report instead of the twelve built-in ones. Each one needs its own coordinates and elevation."
 
 [inputs.schema.properties.regions.items]
 type = "object"
@@ -90,6 +90,14 @@ description = "Short stable identifier for this place, e.g. ia. Downstream model
 [inputs.schema.properties.regions.items.properties.state]
 type = "string"
 description = "Two-letter state code, e.g. IA. Optional; carried through to the output."
+
+[inputs.schema.properties.regions.items.properties.stratum]
+type = "string"
+description = "Which part of the state's corn this point stands for: irrigated, rainfed, or all for a place that is not split. Optional; defaults to all and is carried through to the output."
+
+[inputs.schema.properties.regions.items.properties.weight]
+type = "number"
+description = "How much of the region set's corn production this place stands for, as a fraction. Optional; the built-in places carry one so the two halves of a split state can be weighted back together."
 
 [inputs.schema.properties.regions.items.properties.lat]
 type = "number"
@@ -134,7 +142,7 @@ required = ["region_key", "state", "date", "is_forecast", "LAT", "LON", "ELEV", 
 
 [outputs.schema.properties.rows.items.properties.region_key]
 type = "string"
-description = "The region's stable identifier, e.g. ia. Downstream models join on this."
+description = "The region's stable identifier, e.g. ia, or ne_irrigated where a state is split by water regime. Downstream models join on this."
 
 [outputs.schema.properties.rows.items.properties.state]
 type = "string"

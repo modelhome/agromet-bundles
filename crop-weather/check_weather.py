@@ -234,20 +234,60 @@ def check_gdd():
 # mean the production weighting or the county join went wrong.
 CORN_BELT = {"lat": (36.0, 49.0), "lon": (-104.0, -80.0)}
 EXPECTED_STATES = {"IA", "IL", "NE", "MN", "IN", "SD", "KS", "OH", "MO", "WI"}
+STRATA = {"all", "irrigated", "rainfed"}
+
+# The single production-weighted point each split state had before the strata
+# existed, as committed at 8c79072. Weighting the two stratum points by their
+# weights has to reproduce these: the strata partition one production total, so
+# a weighted mean over the parts equals the mean over the whole. Any deviation
+# is a bug in the county join or the apportionment, not a modelling choice.
+#
+# The tolerance is 1e-3 degrees, about 100 m, because regions.csv stores
+# weights and coordinates rounded to 4 decimal places; the observed error is
+# 1.4e-4. It is far tighter than the 73 km and 206 km the strata sit apart, so
+# the check still fails loudly on a real error.
+PRE_SPLIT_POINTS = {"NE": (41.1658, -98.3301), "KS": (38.6509, -98.4763)}
+RECOMBINATION_TOLERANCE = 1e-3
 
 
 def check_regions():
     print("region table")
     with open(HERE / "regions.csv", newline="") as fh:
         rows = list(csv.DictReader(fh))
-    check("regions.csv has 10 regions", len(rows) == 10, str(len(rows)))
+    check("regions.csv has 12 regions", len(rows) == 12, str(len(rows)))
     keys = [r["region_key"] for r in rows]
     check("region_key values are unique", len(set(keys)) == len(keys))
-    check("region_key is the lower-cased state code",
-          all(r["region_key"] == r["state"].lower() for r in rows))
+    check("region_key is the state code, suffixed with the stratum when split",
+          all(r["region_key"] == (r["state"].lower() if r["stratum"] == "all"
+                                  else f"{r['state'].lower()}_{r['stratum']}") for r in rows))
     check("the states are the top ten corn states",
           {r["state"] for r in rows} == EXPECTED_STATES,
           str(sorted({r["state"] for r in rows} ^ EXPECTED_STATES)))
+    check("every stratum is one of the three allowed values",
+          all(r["stratum"] in STRATA for r in rows),
+          str(sorted({r["stratum"] for r in rows} - STRATA)))
+
+    # A state is either unsplit or split in two; no other shape is meaningful,
+    # and any other shape would double-count or drop production.
+    by_state = {}
+    for row in rows:
+        by_state.setdefault(row["state"], []).append(row["stratum"])
+    check("each state appears once as 'all' or twice as irrigated and rainfed",
+          all(sorted(v) == ["all"] or sorted(v) == ["irrigated", "rainfed"]
+              for v in by_state.values()),
+          str({k: sorted(v) for k, v in by_state.items()
+               if sorted(v) not in (["all"], ["irrigated", "rainfed"])}))
+    check("exactly NE and KS are split",
+          {s for s, v in by_state.items() if sorted(v) == ["irrigated", "rainfed"]}
+          == set(PRE_SPLIT_POINTS))
+
+    # The weights partition one production total, so they sum to 1. The
+    # tolerance absorbs 4-decimal rounding on twelve rows, nothing more.
+    total_weight = sum(float(r["weight"]) for r in rows)
+    check("the weights sum to 1.0", abs(total_weight - 1.0) <= 5e-4, f"{total_weight:.6f}")
+    check("every weight is a positive fraction",
+          all(0 < float(r["weight"]) < 1 for r in rows))
+
     for row in rows:
         lat, lon, elev = float(row["lat"]), float(row["lon"]), float(row["elev_m"])
         check(f"{row['region_key']} sits in the corn belt",
@@ -258,6 +298,28 @@ def check_regions():
     check("every region records its method", all(r["method"].strip() for r in rows))
     check("every region cites its source",
           all("NASS" in r["source"] and "Gazetteer" in r["source"] for r in rows))
+    # AC-3: the threshold and the state's own measured share are in the row, so
+    # the file explains its own split decision without the README.
+    check("every region's method states the split threshold and its own share",
+          all("20 percent split threshold" in r["method"]
+              and "percent of this state's harvested corn acres" in r["method"]
+              for r in rows))
+    check("a split row's source cites the irrigated series it rests on",
+          all(("IRRIGATED - ACRES HARVESTED" in r["source"]
+               and "IRRIGATED, ENTIRE CROP - YIELD" in r["source"])
+              for r in rows if r["stratum"] != "all"))
+
+    # The decisive region check: recombining the strata reproduces the point
+    # the bundle published before the split.
+    for state, (want_lat, want_lon) in PRE_SPLIT_POINTS.items():
+        strata = [r for r in rows if r["state"] == state]
+        weight = sum(float(r["weight"]) for r in strata)
+        got_lat = sum(float(r["weight"]) * float(r["lat"]) for r in strata) / weight
+        got_lon = sum(float(r["weight"]) * float(r["lon"]) for r in strata) / weight
+        check(f"{state}'s strata recombine to its pre-split point",
+              abs(got_lat - want_lat) <= RECOMBINATION_TOLERANCE
+              and abs(got_lon - want_lon) <= RECOMBINATION_TOLERANCE,
+              f"{got_lat:.4f}, {got_lon:.4f} vs {want_lat}, {want_lon}")
 
 
 # --- the decisive check: PCSE actually runs on this --------------------------
