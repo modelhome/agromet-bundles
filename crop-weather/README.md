@@ -34,7 +34,7 @@ twelve built-in regions, which is what a daily schedule should send.
 |---|---|---|
 | `date` | today (UTC) | The last observed day. Days after it come from the forecast. |
 | `season_start` | 1 January of `date`'s year | First day reported, and the day accumulation starts from. |
-| `forecast_days` | 15 | Days of forecast after `date`, 0 to 15. |
+| `forecast_days` | 15 | Days of forecast after `date`, 0 to 15. Up to: see below. |
 | `regions` | `regions.csv` | `[{region_key, state, lat, lon, elev_m}]` to use instead of the built-in places. `stratum` and `weight` are optional. |
 | `gdd_base_c` | 10 | Temperature below which the crop does not develop. |
 | `gdd_cap_c` | 30 | Temperature above which extra heat stops speeding development up. |
@@ -43,7 +43,26 @@ twelve built-in regions, which is what a daily schedule should send.
 
 `forecast_days` counts days **after** `date`, and tops out at 15 because
 Open-Meteo's own `forecast_days=16` counts today as its first day. Asking for
-more fails the run rather than silently returning a short window.
+more than 15 fails the run.
+
+A run asks for `forecast_days` and can come back with one fewer. Open-Meteo
+publishes the last slot of its grid before its model run has filled it: the
+date is there and every value on it is null, for a few hours each day. Rather
+than fail -- which is what a `{}` run used to do, early in the UTC day -- the
+run stops one day short and says so, on stderr and in the metadata:
+
+| Field | Meaning |
+|---|---|
+| `forecast_days` | What was asked for. |
+| `forecast_days_served` | What arrived. Equal to `forecast_days` unless the tail was short. |
+| `window_requested` | `[season_start, date + forecast_days]`. |
+| `window_served` | The days actually in the table. |
+
+So a consumer never has to infer a short window from a row count. Two days
+short is a different matter -- that is not the publication cycle but a gap in
+the data -- and still fails the run with a reason on stderr, as any other
+missing day does. Every region is trimmed to the same last day, so the table
+stays rectangular.
 
 The four crop parameters are inputs, not constants, so the same model serves a
 future wheat or soy flow.
@@ -73,9 +92,10 @@ region per day, oldest first within each region:
 whole season, for a chart or a map.
 
 `metadata` on both carries `date`, `season_start`, `forecast_days`,
-`retrieved_at`, `data_source`, `endpoints`, the four crop parameters, the GDD
-method, the Angstrom coefficients per region, the region table, and the PCSE
-convention the columns follow.
+`forecast_days_served`, `window_requested`, `window_served`, `retrieved_at`,
+`data_source`, `endpoints`, the four crop parameters, the GDD method, the
+Angstrom coefficients per region, the region table, and the PCSE convention the
+columns follow.
 
 ## The PCSE contract
 
@@ -402,6 +422,12 @@ Deterministic given `date`, the region set and the Open-Meteo data **as of
 retrieval** -- the same category as a market-data pull. There is no randomness
 and no wall-clock dependence beyond the `date` default and the `retrieved_at`
 stamp.
+
+How far the forecast reaches is part of "the data as of retrieval": a run made
+before Open-Meteo fills the last slot of its grid ends a day earlier than one
+made after. That is why `window_served` is in the metadata rather than left to
+be inferred. A scheduled `{}` run therefore returns 15 forecast days on most
+days and 14 on some, and nothing downstream should assume a fixed row count.
 
 The newest ~21 days per region are forecast or preliminary and ERA5 revises them
 later, so re-running an old `date` can shift those days. Every run re-fetches

@@ -302,6 +302,25 @@ crop-weather/
 - **The strata are not "the better half and the worse half".** The sign of the
   irrigated yield gap flips by state: +105 percent in KS and +55 in NE, but -8
   in IA and -20 in OH, where irrigation sits on marginal ground.
+- **A one-day short forecast tail is tolerated; nothing else is.** Open-Meteo
+  publishes the last slot of its 16-day grid before its model run fills it, so
+  for part of each UTC day the requested window ends on a date that exists with
+  six nulls on it. `fetch_window` now classifies what it could not serve: a
+  trailing gap in the forecast leg, one day at most
+  (`MAX_TRAILING_SHORTFALL_DAYS`), shortens the window and is logged; a hole
+  with data after it, a day the archive owes, an empty result, or a two-day
+  tail still fails the run with a reason on stderr. The default stays 15,
+  because the tolerance is what buys the margin -- buying it by lowering the
+  default would cost every run a forecast day. Brief
+  `docs/features/0004-forecast-tail-nulls.md`.
+- **A short window is never silent, and never ragged.** `metadata` carries
+  `forecast_days_served`, `window_requested` and `window_served` beside the
+  requested `forecast_days`, so a consumer reads what arrived instead of
+  inferring it from a row count; `forecast_days` keeps its old meaning. All
+  regions are fetched before any rows are built and trimmed to the last day
+  every region can serve, so the table stays rectangular and one window
+  describes the run. The consequence, accepted in the brief: a daily `{}`
+  schedule returns 15 forecast days on most days and 14 on some.
 - **`regions.csv` gained `stratum` and `weight`**, and both reach the output
   through `metadata.regions` only. `TABLE_COLUMNS` is unchanged: they are
   constant per region, so repeating them on 3,336 rows would add bulk and no
@@ -331,6 +350,38 @@ platform validator; longer prose belongs in the README. Validate from the
   hand-worked GDD and stress cases, and (added after the Copilot review) five
   payload guards proving a malformed Open-Meteo response exits 1 with a readable
   reason rather than a traceback.
+### Verified results (2026-09-21, brief 0004)
+
+- **The bug is time-of-day dependent, and that is now measured.** The same
+  one-region run exited 1 at 05:04 UTC ("served neither ERA5 nor a forecast
+  for 1 day(s): 2026-10-06") and exited 0 at 06:47 UTC, on unchanged code. At
+  05:04 all six variables were null on the grid's last day at three separate
+  points; `best_match` takes that day from GFS, while `ecmwf_ifs025` was two
+  days shorter and `icon_seamless` three. A baseline taken outside that window
+  passes on unfixed code, which is why the new assertions are synthetic.
+- `check_weather.py`: **165/165 pass**, up from 147. Eight new checks stub
+  `runner.get_json` and pin the classification (tolerated null tail, interior
+  gap, two-day tail, missing observed day, nothing served, repeatability);
+  nine more assert the new metadata against the rows and that every region
+  covers the same days.
+- **Negative test:** with `MAX_TRAILING_SHORTFALL_DAYS` at 0 the suite reports
+  79/80 and exits 1, naming the tolerated-tail check; restored to 1 it is
+  83/83 and exit 0 on the offline leg.
+- **Live proof of both paths**, without waiting for the bad window: `date`
+  2026-09-22 with the default 15 asks one day past the grid, and the run exits
+  0 with `forecast_days` 15, `forecast_days_served` 14, `window_served`
+  ending 2026-10-06, logged per region and once for the run. `date` 2026-09-23
+  asks two days past and exits 1, naming the shortfall and the cap.
+- Full `{}` run at 07:00 UTC: 3,348 rows, 252 forecast, 12 regions, 22 s,
+  `forecast_days_served` 15. Sample run: 819 rows, 45 forecast, rows
+  **byte-identical** to the pre-change run, metadata differing only by
+  `retrieved_at` plus the three new fields.
+- Docker build and run produce rows **identical** to the local run for both
+  the bare `CMD` and the Modelfile's mounted layout, metadata identical apart
+  from `retrieved_at`; the image's own output passes 165/165.
+- `Modelfile.toml` validates clean (`OK`). The three capped fields are
+  untouched at 569 / 592 / 503 characters.
+
 ### Verified results (2026-09-21, brief 0003)
 
 - `build_regions.py` now emits **12 regions from 10 states**, weights summing
@@ -416,14 +467,10 @@ platform validator; longer prose belongs in the README. Validate from the
    split. There is no irrigated *production* series at any aggregation level,
    so the stratum weight is reconstructed by apportioning published county
    production; see the design note below.
-5. **The `{}` default has no forecast margin.** Open-Meteo's forecast endpoint
-   returns a 16-day grid whose last day is null-padded until the model run
-   catches up, and the default asks for exactly 15 days past today, so early in
-   the UTC day a `{}` run fails with "served neither ERA5 nor a forecast".
-   Found at baseline for brief 0003 and out of its scope; it predates that
-   change. The fix is in the fetch path -- ask for one day less, or treat a
-   trailing all-null day as the end of the window -- and it needs its own
-   brief, especially since a daily schedule sends `{}`.
+5. ~~The `{}` default has no forecast margin.~~ Done, brief 0004: a
+   null-padded trailing day now shortens the window by one instead of failing
+   the run, and the metadata says so. The default stays 15. See the design
+   note below.
 6. Follow-ups: the **maize variety**, since
    `Grain_maize_201` matures 13 August from a 1 May sowing, a 104-day season
    against roughly 140 for a US Corn Belt hybrid, probably a larger error
