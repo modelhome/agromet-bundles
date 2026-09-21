@@ -1,9 +1,10 @@
 # crop-weather
 
 **US Corn Crop Weather.** The daily weather a corn crop model runs on, for the
-ten biggest US corn states: 1 January through today plus a two-week forecast,
-in exactly the variables and units PCSE/WOFOST consumes, with accumulated
-growing degree days and frost / heat-stress day counts alongside.
+ten biggest US corn states as twelve regions: 1 January through today plus a
+two-week forecast, in exactly the variables and units PCSE/WOFOST consumes,
+with accumulated growing degree days and frost / heat-stress day counts
+alongside.
 
 This is node 1 of a climate -> agriculture -> finance flow. Its entire job is
 defined by what the crop model downstream needs to eat, so **this bundle's
@@ -27,14 +28,14 @@ python3 crop-weather/runner.py run/crop_weather_request.json \
 ## Input
 
 Every field is optional. An empty object `{}` gives the season so far for the
-ten built-in regions, which is what a daily schedule should send.
+twelve built-in regions, which is what a daily schedule should send.
 
 | Field | Default | Meaning |
 |---|---|---|
 | `date` | today (UTC) | The last observed day. Days after it come from the forecast. |
 | `season_start` | 1 January of `date`'s year | First day reported, and the day accumulation starts from. |
 | `forecast_days` | 15 | Days of forecast after `date`, 0 to 15. |
-| `regions` | `regions.csv` | `[{region_key, state, lat, lon, elev_m}]` to use instead of the built-in states. |
+| `regions` | `regions.csv` | `[{region_key, state, lat, lon, elev_m}]` to use instead of the built-in places. `stratum` and `weight` are optional. |
 | `gdd_base_c` | 10 | Temperature below which the crop does not develop. |
 | `gdd_cap_c` | 30 | Temperature above which extra heat stops speeding development up. |
 | `frost_threshold_c` | 0 | `TMIN` at or below this marks a frost day. |
@@ -148,16 +149,26 @@ asserting that one number falls in a wide band.
 Measured on the 2026 season, maize sown 1 May, `Grain_maize_201`, on PCSE's
 generic `DummySoilDataProvider`:
 
-| region | potential | rainfed | irrigated | water applied |
-|---|---|---|---|---|
-| IA | 10,926 | 10,799 | 10,926 | 18.0 cm |
-| NE | 9,892 | 8,673 | 9,892 | 29.2 cm |
-| KS | 8,746 | 5,940 | 8,746 | 54.0 cm |
+| region | potential | rainfed | irrigated | water applied | in-season rain |
+|---|---|---|---|---|---|
+| `ia` | 10,926 | 10,799 | 10,926 | 18.0 cm | 62.0 cm |
+| `ne_irrigated` | 9,803 | 8,548 | 9,803 | 36.0 cm | 46.9 cm |
+| `ne_rainfed` | 9,835 | 9,003 | 9,835 | 29.2 cm | 47.4 cm |
+| `ks_irrigated` | 8,575 | 3,071 | 8,575 | 63.0 cm | 24.5 cm |
+| `ks_rainfed` | 8,363 | 7,819 | 8,363 | 42.8 cm | 39.2 cm |
 
 TWSO in kg/ha. Irrigating the water-limited run reproduces the potential yield
 exactly, in every region -- which is the point. How far rainfed falls below it
-is entirely a matter of where you are: 1.2 percent in Iowa that season, 32
-percent in Kansas.
+is entirely a matter of where you are: 1.2 percent in Iowa that season, 64
+percent on Kansas's irrigated stratum.
+
+That Kansas pair is the clearest argument for splitting the state. Before the
+split, Kansas's single point reported a 32 percent rainfed shortfall on 39 cm
+of in-season rain. That was an average of two quite different places: where the
+irrigated corn actually is, rain is 24.5 cm and rainfed maize loses 64 percent;
+where the rainfed corn is, rain is 39.2 cm and it loses 6.5 percent. The
+blended point described neither. Nebraska's two points sit only 73 km apart and
+differ much less, which is what a split looks like when it matters less.
 
 The soil is generic rather than real, so these show direction and rough
 magnitude, not a calibrated yield. Water-limited production belongs to
@@ -247,26 +258,143 @@ GDD. That is the method, not a defect.
 ## Regions
 
 Ten states, ranked by county corn-for-grain production in the USDA NASS **2022
-Census of Agriculture**: IA, IL, MN, NE, IN, SD, OH, WI, KS, MO. Each one is
-represented by a single point: the **production-weighted centroid** of that
-state's county internal points, weighting each county by its corn-for-grain
-production. County coordinates come from the **US Census Bureau 2023 Gazetteer**
-county file; elevation is Open-Meteo's terrain height at the chosen point, so it
-matches the grid the weather comes from.
+Census of Agriculture**: IA, IL, MN, NE, IN, SD, OH, WI, KS, MO. They are
+reported as **twelve regions**, because Nebraska and Kansas are each split into
+an irrigated and a rainfed point.
 
-`region_key` is the lower-cased state postal code. **It is this flow's join
-key** -- the crop model and the price model downstream join on it, and it must
-not change between runs.
+Each point is the **production-weighted centroid** of county internal points.
+For the eight unsplit states each county is weighted by its whole corn-for-grain
+production; for a split state's two points, by the part of that production
+apportioned to the stratum, which is derived below. County coordinates come
+from the **US Census Bureau 2023 Gazetteer** county file; elevation is
+Open-Meteo's terrain height at the chosen point, so it matches the grid the
+weather comes from.
 
-`regions.csv` is the committed artifact, with a `method` and `source` column on
-every row. `build_regions.py` rebuilds it; it needs no API key, but it downloads
-a ~300 MB NASS bulk export, so it is a one-time script and is not in the image.
-Counties whose production NASS withholds for disclosure reasons are excluded,
-and each row records how many that was (0 to 5 per state).
+### Why two states are split
+
+A single point per state averages irrigated and rainfed corn as if they were
+one crop. Where irrigation is widespread that point drifts towards places that
+are dry but productive *because* of water this model cannot see, so the weather
+it reports is drier than the rainfed crop experiences while the production
+weighting behind it was bought with irrigation.
+
+**A state is split when irrigation covers 20 percent or more of its harvested
+corn acres.** Measured on the 2022 Census:
+
+| State | Irrigated share of harvested corn acres | |
+|---|---|---|
+| NE | 52.7 % | split |
+| KS | 25.4 % | split |
+| MO | 9.4 % | single point |
+| IN | 6.3 % | single point |
+| WI | 4.7 % | single point |
+| MN | 3.9 % | single point |
+| SD | 3.5 % | single point |
+| IL | 3.3 % | single point |
+| IA | 1.2 % | single point |
+| OH | 0.5 % | single point |
+
+Nothing sits near the line. Below about 10 percent a split buys nothing, and
+two further measurements say to stop at NE and KS: counties whose irrigated
+figure NASS withholds hold 0.0 percent of Nebraska's production and 4.9 percent
+of Kansas's (against 33.8 percent in Missouri), and Missouri's irrigated corn is
+bimodal enough that its stratum point would land in the Ozarks, between the
+Bootheel and the northwest river valley, where no irrigated corn grows.
+
+### How a stratum's weight is derived
+
+NASS publishes **no irrigated production series at any aggregation level** --
+not county, not state, not national. So the weight is reconstructed: each
+county's *published* production is apportioned between the two strata in
+proportion to acres times a state-level stratum yield.
+
+```
+share_irrigated = a_irr * Y_irr / (a_irr * Y_irr + a_rain * Y_rain)
+```
+
+`a_irr` is county `CORN, GRAIN, IRRIGATED - ACRES HARVESTED`, `a_rain` is total
+harvested acres minus that, and `Y_irr` / `Y_rain` are the state-level yields of
+operations that irrigate all of their corn and none of it.
+
+Because published production is *divided* rather than re-estimated, the strata
+sum exactly to the state's undivided weight, and recombining the two points by
+weight reproduces the single point this bundle published before the split. Only
+the yield *ratio* matters, not the levels; a bias common to both cancels.
+
+Three limits worth knowing:
+
+- **County acres are multiplied by a state yield**, so one irrigated-to-rainfed
+  yield ratio applies to every county in a state, and within-state variation in
+  that ratio is lost.
+- **`Y_irr` and `Y_rain` are operation-level classes.** Farms that irrigate only
+  part of their corn are in neither yield series, though their acres are still
+  apportioned using the ratio taken from the two that are.
+- **Rainfed acres are a subtraction**, and a county whose irrigated figure is
+  withheld is treated as zero, which biases the rainfed stratum slightly large.
+  The bound is the withheld share above: 0.0 percent in NE, 4.9 percent in KS.
+
+The strata are **not "the better half and the worse half"**. Irrigation status
+is confounded with soil quality and the sign of the yield gap flips by state:
+irrigating operations out-yield non-irrigating ones by 105 percent in Kansas and
+55 percent in Nebraska, but yield 8 percent *less* in Iowa and 20 percent less
+in Ohio, where irrigation sits on marginal ground. The strata say where the corn
+is and how it is watered, not which half is better.
+
+### What a downstream consumer must do
+
+`region_key` is **this flow's join key** and it must not change between runs.
+This change moves it, once:
+
+| Before | After |
+|---|---|
+| `ne` | `ne_irrigated`, `ne_rainfed` |
+| `ks` | `ks_irrigated`, `ks_rainfed` |
+| the other eight | unchanged (`ia`, `il`, `mn`, `in`, `sd`, `oh`, `wi`, `mo`) |
+
+**`ne` and `ks` no longer exist.** A consumer that joins on them will find
+nothing rather than silently getting the wrong answer, which is the reason the
+old keys were retired rather than kept alongside the new ones.
+
+`weight` is each region's share of the **whole region set's** corn production,
+so the twelve weights sum to 1. It is not normalized within a state, and that
+distinction decides how you combine the strata:
+
+- **For a whole-region-set aggregate**, use the weights raw:
+  `sum(weight * result)` over all twelve rows.
+- **For one result for a single state**, normalize by that state's own total
+  first, or the answer comes out scaled by the state's share of the region set:
+
+  ```
+  nebraska = (0.0808 * irrigated + 0.0462 * rainfed) / (0.0808 + 0.0462)
+  ```
+
+  The divisor is Nebraska's 0.1270. Leaving it out gives you Nebraska's
+  contribution to the ten-state total, not Nebraska's yield.
+
+A consumer that wants one series per state regardless should group by `state`,
+which is still the two-letter code on every row. Summing rows without either
+will now double-count nothing -- each acre appears once -- but will treat
+Nebraska's two points as two independent places, which they are.
+
+`stratum` is `irrigated`, `rainfed`, or `all` for a state that is not split.
+Both `stratum` and `weight` appear in each output's `metadata.regions`, so a
+consumer reading the long table joins them on `region_key` rather than finding
+them repeated on all 3,336 rows.
+
+### The file
+
+`regions.csv` is the committed artifact, with `stratum`, `weight`, `method` and
+`source` on every row; each row's `method` states the threshold and that state's
+own measured irrigated share, so the file explains its own split decision.
+`build_regions.py` rebuilds it; it needs no API key, but it downloads a ~300 MB
+NASS bulk export, so it is a one-time script and is not in the image. Counties
+whose production NASS withholds for disclosure reasons are excluded, and each
+row records how many that was.
 
 A state-scale representative point is a modelling choice, not a measurement. It
-describes where the state's corn is, not any particular field. Crop-reporting
-districts would be the natural refinement.
+describes where the corn is, not any particular field, and a stratum point is
+still an average over a stratum. Crop-reporting districts would be the natural
+refinement.
 
 ## Determinism
 
@@ -328,10 +456,10 @@ crop-weather/
   Modelfile.toml      two JSON outputs; semantic annotations
   Dockerfile          python:3.12-slim, no pip layer (standard library only)
   runner.py           the model
-  regions.csv         ten states: production-weighted point, method, source
+  regions.csv         twelve regions: point, stratum, weight, method, source
   build_regions.py    one-time region build from NASS + Census (not in the image)
   check_weather.py    validation, including the WOFOST run (not in the image)
-  sample_input.json   2026-09-15, Iowa / Illinois / Nebraska
+  sample_input.json   2026-09-15, Iowa / Illinois / irrigated Nebraska
   README.md
 ```
 

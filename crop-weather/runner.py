@@ -6,7 +6,8 @@ Reads one JSON input file (positional arg, default ``sample_input.json``). Every
 field is optional, so a daily schedule can send ``{}``:
 
 - ``date``          -- ISO date, the last observed day. Defaults to today (UTC).
-- ``regions``       -- ``[{region_key, lat, lon, elev_m}]``. Defaults to regions.csv.
+- ``regions``       -- ``[{region_key, lat, lon, elev_m}]``. Defaults to regions.csv,
+                       which carries a `stratum` and a `weight` per row.
 - ``season_start``  -- ISO date the window starts. Defaults to 1 January of
                        ``date``'s year.
 - ``forecast_days`` -- days of forecast past ``date``. Defaults to 15, which is
@@ -391,6 +392,14 @@ def load_regions():
             {
                 "region_key": row["region_key"],
                 "state": row["state"],
+                # A state with a large irrigated share carries two rows, an
+                # irrigated stratum and a rainfed one, which is why the key is
+                # not always the state code. `weight` is the row's share of the
+                # region set's corn production; the two carry through to the
+                # output metadata so a consumer can weight the strata back
+                # together. See regions.csv and build_regions.py.
+                "stratum": row["stratum"],
+                "weight": float(row["weight"]),
                 "lat": float(row["lat"]),
                 "lon": float(row["lon"]),
                 "elev_m": float(row["elev_m"]),
@@ -469,6 +478,10 @@ def _parse_region(item, index):
     region = {
         "region_key": str(item["region_key"]),
         "state": str(item.get("state") or ""),
+        # Optional, like `state`: a caller naming its own points need not know
+        # about strata, and gets the unsplit default and no weight.
+        "stratum": str(item.get("stratum") or "all"),
+        "weight": None if _blank(item.get("weight")) else float(item["weight"]),
         "lat": float(item["lat"]),
         "lon": float(item["lon"]),
         "elev_m": float(item["elev_m"]),

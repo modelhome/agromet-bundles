@@ -184,6 +184,12 @@ unchanged. Downstream nodes join on the key and add their own attributes
 key. Commit the region table as a file, with the source and the method that
 chose each representative point.
 
+The owning node may still *restratify* -- split one region into two because the
+single point averaged things that should not be averaged. That retires a key
+rather than redefining it, and it is a breaking change for every consumer, so
+it happens in a brief of its own with the old and new keys written down. Brief
+0003 did this to `ne` and `ks`; see the bundle's design notes below.
+
 ## How features are built: `feat`
 
 Features are developed from versioned briefs with the vendored
@@ -203,8 +209,9 @@ restating them.
 ## The `crop-weather/` bundle
 
 **US Corn Crop Weather.** Given an optional `date`, fetches daily Open-Meteo
-weather from 1 January through `date` plus 15 forecast days for ten
-production-weighted US corn-state points, converts it into PCSE's
+weather from 1 January through `date` plus 15 forecast days for twelve
+production-weighted US corn points (ten states, two of them split by water
+regime), converts it into PCSE's
 `WeatherDataContainer` convention, and adds capped-average growing degree days
 and frost / heat-stress day counts. Brief:
 `docs/features/0001-crop-weather.md`; plan with every decision and its
@@ -216,10 +223,10 @@ crop-weather/
   Modelfile.toml      two JSON outputs; semantic annotations
   Dockerfile          python:3.12-slim, no pip layer at all
   runner.py           the model
-  regions.csv         ten states: production-weighted point, method, source
+  regions.csv         twelve regions: point, stratum, weight, method, source
   build_regions.py    one-time region build (not in the image)
   check_weather.py    validation incl. a real WOFOST run (not in the image)
-  sample_input.json   2026-09-15, Iowa / Illinois / Nebraska
+  sample_input.json   2026-09-15, Iowa / Illinois / irrigated Nebraska
   README.md
 ```
 
@@ -270,7 +277,35 @@ crop-weather/
 - **GDD accumulates from `season_start`, not from planting.** This node knows
   nothing about planting dates. `gdd_daily` is emitted alongside
   `gdd_cumulative` so the crop model can re-accumulate from its own start.
-- **Compact JSON outputs** (no indentation): 2,770 rows is ~900 KB compact.
+- **Compact JSON outputs** (no indentation): 3,336 rows is ~1.1 MB compact.
+- **NE and KS carry two points each; the other eight states carry one.** Brief
+  `docs/features/0003-irrigation-region-strata.md`. A single point per state
+  averages irrigated and rainfed corn as if they were one crop, and where
+  irrigation is widespread it drifts towards places that are dry but productive
+  *because* of water this node cannot see. A state is split when irrigation
+  covers **20 percent or more** of its harvested corn acres: NE 52.7 percent
+  and KS 25.4 percent are in, MO 9.4 percent is the next nearest and is out.
+  `region_key` becomes `ne_irrigated` / `ne_rainfed` / `ks_irrigated` /
+  `ks_rainfed`; `ne` and `ks` are retired, not kept alongside, so a stale join
+  finds nothing rather than silently getting the wrong answer.
+- **A stratum's weight is apportioned, not measured.** NASS publishes no
+  irrigated production at county, state or national level -- verified by
+  enumerating every `CORN, GRAIN*` series in the 2022 Census export -- so each
+  county's *published* production is divided between the strata in proportion
+  to acres times a state-level stratum yield (`CORN, GRAIN, IRRIGATED, ENTIRE
+  CROP` against `NONE OF CROP`). Because production is divided rather than
+  re-estimated, the strata sum exactly to the state's old weight and
+  recombining the two points by weight reproduces the pre-split point, which is
+  what `check_weather.py` asserts. Only the yield *ratio* matters; county acres
+  times a state yield mixes resolutions, and that is stated in every split
+  row's `method`.
+- **The strata are not "the better half and the worse half".** The sign of the
+  irrigated yield gap flips by state: +105 percent in KS and +55 in NE, but -8
+  in IA and -20 in OH, where irrigation sits on marginal ground.
+- **`regions.csv` gained `stratum` and `weight`**, and both reach the output
+  through `metadata.regions` only. `TABLE_COLUMNS` is unchanged: they are
+  constant per region, so repeating them on 3,336 rows would add bulk and no
+  information.
 
 ### Modelfile
 
@@ -296,6 +331,47 @@ platform validator; longer prose belongs in the README. Validate from the
   hand-worked GDD and stress cases, and (added after the Copilot review) five
   payload guards proving a malformed Open-Meteo response exits 1 with a readable
   reason rather than a traceback.
+### Verified results (2026-09-21, brief 0003)
+
+- `build_regions.py` now emits **12 regions from 10 states**, weights summing
+  to 1.0000. The eight unsplit states' coordinates are **byte-identical** to
+  the pre-split file; the four new points are NE irrigated 41.1699, -98.6459
+  (596 m) and rainfed 41.1585, -97.7774 (530 m); KS irrigated 38.1752,
+  -99.7654 (676 m) and rainfed 38.9711, -97.6086 (410 m). The elevation spread
+  is itself informative: the blended KS point sat at 582 m, between a 676 m
+  High Plains irrigated stratum and a 410 m rainfed one.
+- **Recombination holds.** Weighting each state's two points by their weights
+  reproduces the pre-split point to 1.4e-4 degrees (NE 41.1658, -98.3300
+  against the committed 41.1658, -98.3301; KS exact to 4 dp). The residual is
+  4-decimal rounding in the stored weights, which is why the check's tolerance
+  is 1e-3 degrees rather than exact equality.
+- `check_weather.py` on the full run: **147/147 checks pass**, up from 128
+  because of the new region-table checks. The driest region moved from `sd` to
+  **`ks_irrigated`** (24.5 cm of rain from 1 May to 30 September, against SD's
+  33.8 cm), so the three production levels now run there: potential 8,575
+  kg/ha, rainfed 3,071 (64 percent below), irrigated 8,575 with 63.0 cm
+  applied. The assertions got sharper, not weaker.
+- **The Kansas split is visible in the yields.** Before it, the single KS point
+  reported a 32 percent rainfed shortfall on 39 cm of in-season rain. That was
+  an average of two different places: `ks_irrigated` loses 64 percent on 24.5
+  cm, `ks_rainfed` loses 6.5 percent on 39.2 cm. Iowa is unchanged at 10,926 /
+  10,799 / 18.0 cm, confirming only NE and KS moved. NE's two points are 73 km
+  apart and differ much less (12.8 and 8.5 percent shortfalls).
+- Full run (`{"forecast_days": 14}`, 12 regions): 3,336 rows, 240 forecast,
+  18 s, 1.1 MB. Sample (2026-09-15, 3 regions): 819 rows, 45 forecast.
+- Docker build and run produce rows **identical** to the local run, metadata
+  identical apart from `retrieved_at`, for both the bare `CMD` and the
+  Modelfile's mounted layout; the image carries the twelve-region table.
+- `Modelfile.toml` validates clean (`OK`, no annotation warnings) with
+  `description` at 569, `validity_domain` at 592 and `not_for` at 503
+  characters, all inside the platform's 600-character cap.
+- **Pre-existing failure, not caused by this change and not fixed by it:** the
+  literal `{}` input fails at present because Open-Meteo returns the 16th
+  forecast slot null-padded early in the UTC day, and the default asks for
+  exactly 15 days past today. Diagnosed at 03:07 UTC on 2026-09-21; it
+  reproduces on `main`. Baseline and final runs both used
+  `{"forecast_days": 14}` so they stay comparable. See the task list.
+
 ### Verified results (2026-09-20, brief 0002)
 
 - `check_weather.py` on the full default run: **128/128 checks pass**, up from
@@ -336,17 +412,29 @@ platform validator; longer prose belongs in the README. Validate from the
 2. Mark the PR ready once AC-9 passes; John merges.
 3. After merge: register on Model Home from `main` and put it on a daily
    schedule with `{}`.
-4. Follow-ups: **irrigated / rainfed region strata** -- check whether NASS
-   publishes county-level `CORN, GRAIN, IRRIGATED - PRODUCTION` widely enough,
-   given disclosure withholding, to split each state's representative point in
-   two (the point is production-weighted over all corn today, which in NE and
-   KS pulls it towards irrigated acres); the **maize variety**, since
+4. ~~Irrigated / rainfed region strata.~~ Done, brief 0003: NE and KS are
+   split. There is no irrigated *production* series at any aggregation level,
+   so the stratum weight is reconstructed by apportioning published county
+   production; see the design note below.
+5. **The `{}` default has no forecast margin.** Open-Meteo's forecast endpoint
+   returns a 16-day grid whose last day is null-padded until the model run
+   catches up, and the default asks for exactly 15 days past today, so early in
+   the UTC day a `{}` run fails with "served neither ERA5 nor a forecast".
+   Found at baseline for brief 0003 and out of its scope; it predates that
+   change. The fix is in the fetch path -- ask for one day less, or treat a
+   trailing all-null day as the end of the window -- and it needs its own
+   brief, especially since a daily schedule sends `{}`.
+6. Follow-ups: the **maize variety**, since
    `Grain_maize_201` matures 13 August from a 1 May sowing, a 104-day season
    against roughly 140 for a US Corn Belt hybrid, probably a larger error
    source in Iowa than water is; NASA POWER for the observed leg;
    crop-reporting-district granularity; wheat and soy parameter sets; `TEMP` as
    an explicit column if the crop model wants it rather than PCSE's
-   `(TMIN+TMAX)/2` default.
+   `(TMIN+TMAX)/2` default; and a **dispersion guard on representative
+   points**, since a production-weighted mean of two distant clusters can land
+   where no corn grows (Missouri's irrigated stratum would sit in the Ozarks)
+   and the existing hull check does not catch it, because such a point is still
+   inside the county bounding box.
 
 ## Task list
 
