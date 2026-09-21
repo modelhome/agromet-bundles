@@ -309,7 +309,12 @@ crop-weather/
   trailing gap in the forecast leg, one day at most
   (`MAX_TRAILING_SHORTFALL_DAYS`), shortens the window and is logged; a hole
   with data after it, a day the archive owes, an empty result, or a two-day
-  tail still fails the run with a reason on stderr. The default stays 15,
+  tail still fails the run with a reason on stderr. **The tolerated shape is
+  an advertised, all-null date and nothing else.** `daily_payload` drops a day
+  short of one variable exactly as it drops an all-null one, and says nothing
+  about a date the response omits, so the reason cannot be recovered from its
+  output; `blank_days` reads the all-null dates from the payload itself. A
+  partly null or absent trailing day is missing data and fails. The default stays 15,
   because the tolerance is what buys the margin -- buying it by lowering the
   default would cost every run a forecast day. Brief
   `docs/features/0004-forecast-tail-nulls.md`.
@@ -359,26 +364,32 @@ platform validator; longer prose belongs in the README. Validate from the
   points; `best_match` takes that day from GFS, while `ecmwf_ifs025` was two
   days shorter and `icon_seamless` three. A baseline taken outside that window
   passes on unfixed code, which is why the new assertions are synthetic.
-- `check_weather.py`: **165/165 pass**, up from 147. Eight new checks stub
-  `runner.get_json` and pin the classification (tolerated null tail, interior
-  gap, two-day tail, missing observed day, nothing served, repeatability);
-  nine more assert the new metadata against the rows and that every region
-  covers the same days.
+- `check_weather.py`: **168/168 pass**, up from 147. Eleven new checks stub
+  `runner.get_json` and pin the classification (tolerated all-null tail,
+  partly null tail, absent tail, interior gap, two-day tail, missing observed
+  day, nothing served, repeatability); ten more assert the new metadata
+  against the rows and that every region covers the same days.
 - **Negative test:** with `MAX_TRAILING_SHORTFALL_DAYS` at 0 the suite reports
   79/80 and exits 1, naming the tolerated-tail check; restored to 1 it is
-  83/83 and exit 0 on the offline leg.
-- **Live proof of both paths**, without waiting for the bad window: `date`
-  2026-09-22 with the default 15 asks one day past the grid, and the run exits
-  0 with `forecast_days` 15, `forecast_days_served` 14, `window_served`
-  ending 2026-10-06, logged per region and once for the run. `date` 2026-09-23
-  asks two days past and exits 1, naming the shortfall and the cap.
+  86/86 and exit 0 on the offline leg. Dropping only the `blank_days` clause
+  makes the partly-null and absent-tail checks fail with "no error raised".
+- **There is no live evidence for the tolerated path, and there cannot be
+  outside the window.** The condition exists only while Open-Meteo has an
+  unfilled slot; it had filled by 06:47 UTC. An earlier probe that asked for a
+  window one day past the grid (`date` 2026-09-22) looked like live proof and
+  was not: 2026-10-07 is not advertised by the API at all, so it is an absent
+  date rather than an unfilled slot, and the probe only passed because of the
+  over-broad classification the review caught. It exits 1 now, correctly. The
+  production case still holds: with the default 15 and `date` today, the
+  requested last day is the grid's 16th slot, which the API does advertise
+  with nulls. The synthetic checks are the evidence.
 - Full `{}` run at 07:00 UTC: 3,348 rows, 252 forecast, 12 regions, 22 s,
   `forecast_days_served` 15. Sample run: 819 rows, 45 forecast, rows
   **byte-identical** to the pre-change run, metadata differing only by
   `retrieved_at` plus the three new fields.
 - Docker build and run produce rows **identical** to the local run for both
   the bare `CMD` and the Modelfile's mounted layout, metadata identical apart
-  from `retrieved_at`; the image's own output passes 165/165.
+  from `retrieved_at`; the image's own output passes 168/168.
 - `Modelfile.toml` validates clean (`OK`). The three capped fields are
   untouched at 569 / 592 / 503 characters.
 

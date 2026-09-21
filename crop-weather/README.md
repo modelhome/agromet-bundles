@@ -58,11 +58,13 @@ run stops one day short and says so, on stderr and in the metadata:
 | `window_requested` | `[season_start, date + forecast_days]`. |
 | `window_served` | The days actually in the table. |
 
-So a consumer never has to infer a short window from a row count. Two days
-short is a different matter -- that is not the publication cycle but a gap in
-the data -- and still fails the run with a reason on stderr, as any other
-missing day does. Every region is trimmed to the same last day, so the table
-stays rectangular.
+So a consumer never has to infer a short window from a row count. What is
+tolerated is narrow: one final day that the service lists with every value
+null, which is what an unfilled slot looks like. Two such days, a day carrying
+only some of its values, a day the response leaves out altogether, or a gap
+anywhere earlier are all missing data rather than a publication lag, and still
+fail the run with a reason on stderr. Every region is trimmed to the same last
+day, so the table stays rectangular.
 
 The four crop parameters are inputs, not constants, so the same model serves a
 future wheat or soy flow.

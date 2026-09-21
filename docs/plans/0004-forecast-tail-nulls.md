@@ -73,7 +73,8 @@ row count. This goes in the README.
 | A missing day at or before `today` (the archive leg) | `RunError`, as today |
 | A missing day with a served day after it (interior gap) | `RunError`, as today |
 | 2 or more missing days after the last served day | `RunError`, naming the shortfall |
-| Exactly 1 missing day after the last served day, after `today` | Tolerated: window shortens by one day, logged to stderr |
+| A trailing day the response never advertised, or one short of only some of its variables | `RunError`: missing data, not an unfilled slot (added after review) |
+| Exactly 1 advertised, all-null missing day after the last served day, after `today` | Tolerated: window shortens by one day, logged to stderr |
 
 The one-day cap is a named constant, `MAX_TRAILING_SHORTFALL_DAYS = 1`, with
 the measurement behind it in a comment. The observed upstream behaviour is a
@@ -141,8 +142,8 @@ new two-day-shortfall error is a separate, new message.
 
 | ID | Acceptance criterion | Implementation | Verification | Status |
 |---|---|---|---|---|
-| AC-1 | A run whose window ends on a fully null-padded trailing slot completes and exits 0 | `runner.py:253-282` trailing-gap branch; `main:615-634` trim | `check_fetch_window` "a null-padded last forecast day shortens the window instead of failing" (+3 more); live `date` 2026-09-22 run exited 0, served to 2026-10-06 | pass |
-| AC-2 | Any other unservable day still fails: non-zero exit, region and day on stderr | `runner.py:256-280` classification | Four checks: interior gap, two-day tail, missing observed day, nothing served; live `date` 2026-09-23 run exited 1 with the shortfall and the cap named | pass |
+| AC-1 | A run whose window ends on a fully null-padded trailing slot completes and exits 0 | `fetch_window` trailing-gap branch + `blank_days`; `main` trim | `check_fetch_window` "a null-padded last forecast day shortens the window instead of failing" (+3 more), against a stubbed payload. No live evidence: the condition exists only while Open-Meteo has an unfilled slot, and it had filled by 06:47 UTC | pass |
+| AC-2 | Any other unservable day still fails: non-zero exit, region and day on stderr | `fetch_window` classification, now keyed on `blank_days` | Six checks: partly null tail, absent tail, interior gap, two-day tail, missing observed day, nothing served. Live: a future `date` asking past the grid exits 1 | pass |
 | AC-3 | Same `date` and `forecast_days` over the same upstream data give the same days | `fetch_window` is a pure function of the payloads; uniform trim in `main` | `check_fetch_window` "the same payloads give the same served window"; `check_output` "every region covers the same days" | pass |
 | AC-4 | The output alone says which days were requested and which were served | `run_metadata:536-548` | Five `check_output` assertions tying `window_served` / `forecast_days_served` to the rows; live short run reported 15 requested / 14 served | pass |
 | AC-5 | The assertions live in `check_weather.py`, the suite passes, and each new assertion fails when its fix is reverted | `check_fetch_window`, extended `check_output` | 165/165 with an output file, 83/83 offline; with `MAX_TRAILING_SHORTFALL_DAYS = 0` the suite reports 79/80 and exits 1, naming the tolerated-tail check | pass |
@@ -153,11 +154,11 @@ new two-day-shortfall error is a separate, new message.
 
 | Command | Purpose | Baseline result (2026-09-21 06:57 UTC) | Final result |
 |---|---|---|---|
-| `uv run --no-project --python 3.12 --with pcse==6.0.13 --with numpy python check_weather.py` (no argument: the offline leg) | The synthetic guards, including the new window cases. This is the falsifiable evidence for AC-1..AC-3, independent of the API's mood | 75/75 pass | **83/83 pass** (+8 forecast-tail checks) |
+| `uv run --no-project --python 3.12 --with pcse==6.0.13 --with numpy python check_weather.py` (no argument: the offline leg) | The synthetic guards, including the new window cases. This is the falsifiable evidence for AC-1..AC-3, independent of the API's mood | 75/75 pass | **86/86 pass** (+11 forecast-tail checks) |
 | `python3 runner.py sample_input.json ../run/crop_weather_summary.output.json > ../run/baseline_sample_daily.json` | AC-6: the committed sample, rows diffed before and after | exit 0, 819 rows, 45 forecast | exit 0, 819 rows, rows **byte-identical**, metadata differing only by `retrieved_at` and the three new fields |
 | `printf '{}' > /tmp/empty.json && python3 runner.py /tmp/empty.json ../run/crop_weather_summary.output.json > ../run/crop_weather_daily.output.json` | The production path end to end. **Record the UTC time with the result** -- see the note below | exit 0, 3,348 rows, 252 forecast, 22.4 s -- **passing only because 06:57 UTC is outside the bad window** | exit 0, 3,348 rows, 252 forecast, `forecast_days_served` 15 (07:00 UTC, still outside the window) |
-| `uv run --no-project --python 3.12 --with pcse==6.0.13 --with numpy python check_weather.py ../run/crop_weather_daily.output.json` | The full suite on a real output, including the WOFOST run | 147/147 pass | **165/165 pass** (+18) |
-| `docker build -t crop-weather . && docker run --rm crop-weather` | Image parity: rows identical to the local run, metadata identical apart from `retrieved_at` | not run: parity is a final-only comparison against the local run at the same code state | bare `CMD` and the mounted layout both produce rows **identical** to the local run, metadata differing only by `retrieved_at`; the image's output passes 165/165 |
+| `uv run --no-project --python 3.12 --with pcse==6.0.13 --with numpy python check_weather.py ../run/crop_weather_daily.output.json` | The full suite on a real output, including the WOFOST run | 147/147 pass | **168/168 pass** (+21) |
+| `docker build -t crop-weather . && docker run --rm crop-weather` | Image parity: rows identical to the local run, metadata identical apart from `retrieved_at` | not run: parity is a final-only comparison against the local run at the same code state | bare `CMD` and the mounted layout both produce rows **identical** to the local run, metadata differing only by `retrieved_at`; the image's output passes 168/168 |
 | `uv run python -m orchestration.modelfile validate <modelhome>/…/crop-weather/Modelfile.toml` | AC-7. Run from the sibling `modelhome` repo | `OK` | `OK`, capped fields untouched at 569 / 592 / 503 |
 
 **Correction to the planned command.** The plan called the argument-less
@@ -277,6 +278,27 @@ No change to `regions.csv`, `build_regions.py`, `sample_input.json`, the
   for a window one day past the grid (`date` 2026-09-22 with the default 15)
   exercises the tolerance against the live API at any hour, and two days past
   exercises the failure. Both were run; neither is committed as a test.
+- **Review findings addressed (Copilot, PR #4).** Two, both real. (1) The
+  classification keyed on "`daily_payload` dropped this day", which collapses
+  three different causes: an advertised all-null slot, a day short of only
+  some variables, and a date the response omits. The first is the publication
+  cycle; the other two are missing data and AC-2 requires them to fail. A new
+  `runner.blank_days` reads the advertised all-null dates straight from the
+  payload, and only those are tolerated. Verified by reverting just that
+  clause: the two new checks fail with "no error raised". (2) The brief's
+  Outcome promised success "regardless of how far the upstream model run has
+  got", which the one-day cap contradicts; it is now scoped to the
+  publication lag it actually covers.
+- **A live probe recorded in the first round was not valid evidence for
+  AC-1.** Asking for a window one day past the grid (`date` 2026-09-22 with
+  the default 15) exited 0 before the review fix and exits 1 after it, because
+  2026-10-07 is not advertised by the API at all -- it is an absent date, not
+  an unfilled slot. That probe was passing *because of* the defect Copilot
+  found. The production case is unaffected: with the default 15 and `date`
+  today, the requested last day is the grid's 16th slot, which the API does
+  advertise, with nulls, while the model run catches up. AC-1's evidence is
+  therefore the synthetic checks alone, and the plan no longer claims
+  otherwise.
 - **The over-cap message says "day(s)".** It fires only at two or more with the
   cap at 1, but the negative test drops the cap to 0, where "1 days" read
   badly. Matches the wording of the message beside it.

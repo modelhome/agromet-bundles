@@ -174,11 +174,21 @@ def days_between(first, last):
     return [first + timedelta(days=n) for n in range((last - first).days + 1)]
 
 
-def daily_block(days, blank=()):
-    """An Open-Meteo daily block over `days`, with every variable null on `blank`."""
+def daily_block(days, blank=(), partial=()):
+    """
+    An Open-Meteo daily block over `days`.
+
+    Every variable is null on a `blank` day, which is how the API advertises a
+    slot it has not filled. Only the last variable is null on a `partial` day,
+    which is missing data and must not be mistaken for the same thing.
+    """
+    last_variable = runner.DAILY_VARIABLES[-1]
     block = {"time": [day.isoformat() for day in days]}
     for offset, name in enumerate(runner.DAILY_VARIABLES):
-        block[name] = [None if day in blank else float(offset + 1) for day in days]
+        block[name] = [
+            None if day in blank or (day in partial and name == last_variable)
+            else float(offset + 1)
+            for day in days]
     return {"daily": block}
 
 
@@ -240,6 +250,22 @@ def check_fetch_window():
         # data, not of when the run happened.
         again = fetch_stubbed(TAIL_START, last_day, archive, padded)
         check("the same payloads give the same served window", list(again) == list(window))
+
+    # daily_payload drops a partly null day and an all-null day identically,
+    # so the reason a day is missing has to come from the payload itself.
+    # Only an advertised, all-null terminal date is the publication cycle.
+    partly_null = daily_block(forecast_days, partial=[last_day])
+    check("blank_days sees an all-null date and not a partly null one",
+          runner.blank_days(padded) == {last_day.isoformat()}
+          and runner.blank_days(partly_null) == set(),
+          f"{sorted(runner.blank_days(padded))} / {sorted(runner.blank_days(partly_null))}")
+    expect_run_error("a partly null last forecast day is a gap, not an unfilled slot",
+                     TAIL_START, last_day, archive, partly_null, last_day.isoformat())
+
+    # A date the response never advertised is not an unfilled slot either.
+    omitted = daily_block(forecast_days[:-1])
+    expect_run_error("a last forecast day absent from the response fails",
+                     TAIL_START, last_day, archive, omitted, last_day.isoformat())
 
     # A hole with data after it is a real gap, not a publication lag.
     interior = daily_block(forecast_days, blank=[date(2026, 9, 20)])

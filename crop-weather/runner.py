@@ -192,6 +192,21 @@ def daily_payload(payload, url):
     return out
 
 
+def blank_days(payload):
+    """
+    The dates a payload advertises with *every* variable null.
+
+    That is the signature of a slot Open-Meteo has published but not filled,
+    and it is the only shape of missing day fetch_window tolerates. It is not
+    the same thing as "dropped by daily_payload", which also covers a day
+    short of one variable and says nothing about a date the response omits
+    altogether. Both of those are real gaps, so the reason has to survive.
+    """
+    daily = payload.get("daily") or {}
+    return {day for index, day in enumerate(daily.get("time", []))
+            if all(daily[name][index] is None for name in DAILY_VARIABLES)}
+
+
 def fetch_window(region, first_day, last_day, today):
     """
     {iso date: (values, is_forecast)} covering first_day..last_day inclusive.
@@ -231,6 +246,7 @@ def fetch_window(region, first_day, last_day, today):
     missing = [day for day in wanted if day.isoformat() not in observed]
 
     forecast = {}
+    unfilled = set()
     if missing:
         # past_days and forecast_days count backwards and forwards from today.
         past_days = min(max((today - min(missing)).days, 0), MAX_PAST_DAYS)
@@ -241,6 +257,7 @@ def fetch_window(region, first_day, last_day, today):
             "forecast_days": ahead,
         })
         forecast = daily_payload(payload, FORECAST_URL)
+        unfilled = blank_days(payload)
 
     window = {}
     for day in wanted:
@@ -255,10 +272,15 @@ def fetch_window(region, first_day, last_day, today):
         served = [day for day in wanted if day.isoformat() in window]
         last_served = max(served) if served else None
         # A gap at the very end of the forecast leg is the publication cycle:
-        # Open-Meteo's grid carries a day its model run has not filled. Every
-        # other shape of gap -- nothing served at all, a hole with data after
-        # it, or a day the archive should have covered -- is a real gap.
-        trailing = ([day for day in missing_days if day > last_served and day > today]
+        # Open-Meteo's grid advertises a day its model run has not filled, so
+        # the date is there and all six variables on it are null. Every other
+        # shape of gap is a real gap -- nothing served at all, a hole with data
+        # after it, a day the archive should have covered, a date the response
+        # left out, or a day short of only some of its variables, which is
+        # missing data rather than an unfilled slot.
+        trailing = ([day for day in missing_days
+                     if day > last_served and day > today
+                     and day.isoformat() in unfilled]
                     if last_served is not None else [])
         if len(trailing) != len(missing_days):
             still_missing = [day.isoformat() for day in missing_days]

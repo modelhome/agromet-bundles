@@ -10,11 +10,14 @@ aborts because that day is in the requested window. `{}` is the input the
 Modelfile offers as its "Example to paste" and the input a daily schedule
 re-sends every morning, so this is the production path.
 
-When this is done, a run over the default window succeeds regardless of how far
-the upstream model run has got, while a day that genuinely cannot be served by
-either endpoint still fails the run loudly rather than being interpolated or
-dropped. The window a run covers remains a function of its inputs and the
-upstream data, not of the hour the run happens to start.
+When this is done, a run over the default window survives the publication lag
+that causes this -- one advertised but unfilled day at the end of the grid --
+rather than failing on it. That is a bounded promise, not a general one: a
+larger shortfall is upstream degradation rather than the publication cycle, and
+a day that genuinely cannot be served by either endpoint still fails the run
+loudly rather than being interpolated or dropped. The window a run covers
+remains a function of its inputs and the upstream data, not of the hour the run
+happens to start.
 
 ## Scope
 
