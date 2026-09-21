@@ -260,3 +260,30 @@ recorded here rather than fixed, because narrowing it would mean changing the
 check's design outside the approved plan. The obvious options if it matters --
 require a minimum potential-minus-rainfed gap when in-season rain is below some
 threshold, or run the assertions on more than one region -- belong in a follow-up.
+
+## Review findings addressed
+
+Copilot's review of PR #2, one finding, confirmed and fixed in a follow-up
+commit on the same branch.
+
+1. **An unlabelled yield survived in `docs/plans/0001-crop-weather.md:199`
+   (nit).** The brief's outcome is repo-wide -- every place that reports a
+   WOFOST yield says which production level produced it -- but plan 0001's
+   AC-5 traceability row still read `TWSO 10,926 kg/ha` with only the class
+   name `Wofost72_PP` to imply it. Confirmed and fixed: the row now says
+   potential production in plain words, the same factual clarification already
+   applied to `CLAUDE.md`'s 2026-09-19 entry, with neither record's
+   measurements altered.
+
+Also raised in the review overview but not posted as a comment, and checked
+rather than taken on trust:
+
+- **Cross-year seasons in `season_rain_cm`.** The function keys its 1 May to
+  30 September window off the year of the first row, so a series whose
+  `season_start` falls in the previous year has no in-season rows and every
+  region scores 0 cm, making the driest-region pick arbitrary. Verified that
+  this cannot produce a wrong assertion: the season guard that predates this
+  PR skips the crop runs entirely for such a window (`first_day` 2025-11-01
+  against a 2025-05-01 sowing fails `first_day <= sowing`). The pick is
+  inelegant on input the check refuses to act on, not a live defect, so it is
+  recorded here rather than changed after review.
